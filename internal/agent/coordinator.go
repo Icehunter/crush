@@ -27,6 +27,7 @@ import (
 	"github.com/charmbracelet/crush/internal/log"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
+	"github.com/charmbracelet/crush/internal/oauth/claudecode"
 	"github.com/charmbracelet/crush/internal/oauth/copilot"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
@@ -595,6 +596,15 @@ func (c *coordinator) buildAgentModels(ctx context.Context, isSubAgent bool) (Mo
 		}, nil
 }
 
+// addAnthropicBeta appends a beta tag to the anthropic-beta header, preserving existing values.
+func addAnthropicBeta(headers map[string]string, tag string) {
+	if v, ok := headers["anthropic-beta"]; ok {
+		headers["anthropic-beta"] = v + "," + tag
+	} else {
+		headers["anthropic-beta"] = tag
+	}
+}
+
 func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map[string]string, providerID string) (fantasy.Provider, error) {
 	var opts []anthropic.Option
 
@@ -603,6 +613,12 @@ func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map
 		// NOTE: Prevent the SDK from picking up the API key from env.
 		os.Setenv("ANTHROPIC_API_KEY", "")
 		headers["Authorization"] = apiKey
+	case strings.HasPrefix(apiKey, claudecode.OAuthTokenPrefix):
+		// Claude Code subscription OAuth token — must use Authorization: Bearer, not X-Api-Key,
+		// and requires the oauth beta header for the Anthropic API to accept it.
+		os.Setenv("ANTHROPIC_API_KEY", "")
+		headers["Authorization"] = "Bearer " + apiKey
+		addAnthropicBeta(headers, "oauth-2025-04-20")
 	case providerID == string(catwalk.InferenceProviderMiniMax) || providerID == string(catwalk.InferenceProviderMiniMaxChina):
 		// NOTE: Prevent the SDK from picking up the API key from env.
 		os.Setenv("ANTHROPIC_API_KEY", "")
@@ -805,11 +821,7 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 
 	// handle special headers for anthropic
 	if providerCfg.Type == anthropic.Name && c.isAnthropicThinking(model) {
-		if v, ok := headers["anthropic-beta"]; ok {
-			headers["anthropic-beta"] = v + ",interleaved-thinking-2025-05-14"
-		} else {
-			headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
-		}
+		addAnthropicBeta(headers, "interleaved-thinking-2025-05-14")
 	}
 
 	apiKey, _ := c.cfg.Resolve(providerCfg.APIKey)

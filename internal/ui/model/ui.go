@@ -1433,6 +1433,12 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			m.com.Store().ImportCopilot()
 		}
 
+		// Attempt to import Claude Code subscription token from the keychain.
+		isAnthropic := providerID == string(catwalk.InferenceProviderAnthropic)
+		if isAnthropic && !isConfigured() && !msg.ReAuthenticate {
+			m.com.Store().ImportClaudeCode()
+		}
+
 		if !isConfigured() || msg.ReAuthenticate {
 			m.dialog.CloseDialog(dialog.ModelsID)
 			if cmd := m.openAuthenticationDialog(msg.Provider, msg.Model, msg.ModelType); cmd != nil {

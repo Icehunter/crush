@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 
 	"charm.land/lipgloss/v2"
 	"github.com/atotto/clipboard"
@@ -24,19 +25,24 @@ var loginCmd = &cobra.Command{
 	Short:   "Login Crush to a platform",
 	Long: `Login Crush to a specified platform.
 The platform should be provided as an argument.
-Available platforms are: hyper, copilot.`,
+Available platforms are: hyper, copilot, claude.`,
 	Example: `
 # Authenticate with Charm Hyper
 crush login
 
 # Authenticate with GitHub Copilot
 crush login copilot
+
+# Authenticate with Claude Code subscription
+crush login claude
   `,
 	ValidArgs: []cobra.Completion{
 		"hyper",
 		"copilot",
 		"github",
 		"github-copilot",
+		"claude",
+		"claude-code",
 	},
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -55,6 +61,8 @@ crush login copilot
 			return loginHyper(app.Store())
 		case "copilot", "github", "github-copilot":
 			return loginCopilot(app.Store())
+		case "claude", "claude-code":
+			return loginClaudeCode(app.Store())
 		default:
 			return fmt.Errorf("unknown platform: %s", args[0])
 		}
@@ -196,6 +204,37 @@ func getLoginContext() context.Context {
 		os.Exit(1)
 	}()
 	return ctx
+}
+
+func loginClaudeCode(cfg *config.ConfigStore) error {
+	// CLAUDE_CODE_OAUTH_TOKEN is set by `claude setup-token` — a long-lived (~1 year)
+	// sk-ant-oat* token that works directly with the Anthropic API.
+	apiKey := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
+	if apiKey == "" {
+		fmt.Println("CLAUDE_CODE_OAUTH_TOKEN environment variable is not set.")
+		fmt.Println()
+		fmt.Println("Generate a long-lived token with:")
+		fmt.Println("  claude setup-token")
+		fmt.Println()
+		fmt.Println("Then set it in your shell and re-run:")
+		fmt.Println("  export CLAUDE_CODE_OAUTH_TOKEN=<token>")
+		fmt.Println("  crush login claude")
+		return fmt.Errorf("CLAUDE_CODE_OAUTH_TOKEN not set")
+	}
+
+	if !strings.HasPrefix(apiKey, "sk-ant-oat") {
+		return fmt.Errorf("CLAUDE_CODE_OAUTH_TOKEN does not look like a valid Claude OAuth token (expected sk-ant-oat* prefix)")
+	}
+
+	if err := cfg.SetConfigField(config.ScopeGlobal, "providers.anthropic.api_key", apiKey); err != nil {
+		return err
+	}
+
+	fmt.Println()
+	fmt.Println("You're now authenticated with Claude!")
+	fmt.Println("Token will be valid for approximately 1 year.")
+	fmt.Println("Run `crush login claude` again when it expires.")
+	return nil
 }
 
 func waitEnter() {
