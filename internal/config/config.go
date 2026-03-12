@@ -54,6 +54,12 @@ func (s SelectedModelType) String() string {
 }
 
 const (
+	// New three-tier model type names.
+	SelectedModelTypeMain       SelectedModelType = "main"
+	SelectedModelTypeBackground SelectedModelType = "background"
+	SelectedModelTypePlanning   SelectedModelType = "planning"
+
+	// Deprecated aliases kept for backward compatibility and migration.
 	SelectedModelTypeLarge SelectedModelType = "large"
 	SelectedModelTypeSmall SelectedModelType = "small"
 )
@@ -257,6 +263,7 @@ type Options struct {
 	AutoLSP                   *bool        `json:"auto_lsp,omitempty" jsonschema:"description=Automatically setup LSPs based on root markers,default=true"`
 	Progress                  *bool        `json:"progress,omitempty" jsonschema:"description=Show indeterminate progress updates during long operations,default=true"`
 	DisableNotifications      bool         `json:"disable_notifications,omitempty" jsonschema:"description=Disable desktop notifications,default=false"`
+	AutoModelTier             *bool        `json:"auto_model_tier,omitempty" jsonschema:"description=Automatically select model tier (background/main/planning) based on prompt heuristics,default=false"`
 }
 
 type MCPs map[string]MCPConfig
@@ -329,7 +336,7 @@ type Agent struct {
 	// This is the id of the system prompt used by the agent
 	Disabled bool `json:"disabled,omitempty"`
 
-	Model SelectedModelType `json:"model" jsonschema:"required,description=The model type to use for this agent,enum=large,enum=small,default=large"`
+	Model SelectedModelType `json:"model" jsonschema:"required,description=The model type to use for this agent,enum=main,enum=background,enum=planning,enum=large,enum=small,default=main"`
 
 	// The available tools for the agent
 	//  if this is nil, all tools are available
@@ -373,8 +380,8 @@ func (t ToolGrep) GetTimeout() time.Duration {
 type Config struct {
 	Schema string `json:"$schema,omitempty"`
 
-	// We currently only support large/small as values here.
-	Models map[SelectedModelType]SelectedModel `json:"models,omitempty" jsonschema:"description=Model configurations for different model types,example={\"large\":{\"model\":\"gpt-4o\",\"provider\":\"openai\"}}"`
+	// Supported model types: main, background, planning (large/small are deprecated aliases).
+	Models map[SelectedModelType]SelectedModel `json:"models,omitempty" jsonschema:"description=Model configurations for different model types,example={\"main\":{\"model\":\"gpt-4o\",\"provider\":\"openai\"}}"`
 
 	// Recently used models stored in the data directory config.
 	RecentModels map[SelectedModelType][]SelectedModel `json:"recent_models,omitempty" jsonschema:"-"`
@@ -441,7 +448,11 @@ func (c *Config) GetModelByType(modelType SelectedModelType) *catwalk.Model {
 }
 
 func (c *Config) LargeModel() *catwalk.Model {
-	model, ok := c.Models[SelectedModelTypeLarge]
+	return c.MainModel()
+}
+
+func (c *Config) MainModel() *catwalk.Model {
+	model, ok := c.Models[SelectedModelTypeMain]
 	if !ok {
 		return nil
 	}
@@ -449,7 +460,19 @@ func (c *Config) LargeModel() *catwalk.Model {
 }
 
 func (c *Config) SmallModel() *catwalk.Model {
-	model, ok := c.Models[SelectedModelTypeSmall]
+	return c.BackgroundModel()
+}
+
+func (c *Config) BackgroundModel() *catwalk.Model {
+	model, ok := c.Models[SelectedModelTypeBackground]
+	if !ok {
+		return nil
+	}
+	return c.GetModel(model.Provider, model.Model)
+}
+
+func (c *Config) PlanningModel() *catwalk.Model {
+	model, ok := c.Models[SelectedModelTypePlanning]
 	if !ok {
 		return nil
 	}
@@ -518,7 +541,7 @@ func (c *Config) SetupAgents() {
 			ID:           AgentCoder,
 			Name:         "Coder",
 			Description:  "An agent that helps with executing coding tasks.",
-			Model:        SelectedModelTypeLarge,
+			Model:        SelectedModelTypeMain,
 			ContextPaths: c.Options.ContextPaths,
 			AllowedTools: allowedTools,
 		},
@@ -527,7 +550,7 @@ func (c *Config) SetupAgents() {
 			ID:           AgentTask,
 			Name:         "Task",
 			Description:  "An agent that helps with searching for context and finding implementation details.",
-			Model:        SelectedModelTypeLarge,
+			Model:        SelectedModelTypeMain,
 			ContextPaths: c.Options.ContextPaths,
 			AllowedTools: resolveReadOnlyTools(allowedTools),
 			// NO MCPs or LSPs by default

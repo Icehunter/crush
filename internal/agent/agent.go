@@ -78,11 +78,12 @@ type SessionAgentCall struct {
 	FrequencyPenalty *float64
 	PresencePenalty  *float64
 	NonInteractive   bool
+	ModelTier        config.SelectedModelType
 }
 
 type SessionAgent interface {
 	Run(context.Context, SessionAgentCall) (*fantasy.AgentResult, error)
-	SetModels(large Model, small Model)
+	SetModels(main Model, background Model, planning Model)
 	SetTools(tools []fantasy.AgentTool)
 	SetSystemPrompt(systemPrompt string)
 	Cancel(sessionID string)
@@ -103,8 +104,9 @@ type Model struct {
 }
 
 type sessionAgent struct {
-	largeModel         *csync.Value[Model]
-	smallModel         *csync.Value[Model]
+	mainModel          *csync.Value[Model]
+	backgroundModel    *csync.Value[Model]
+	planningModel      *csync.Value[Model]
 	systemPromptPrefix *csync.Value[string]
 	systemPrompt       *csync.Value[string]
 	tools              *csync.Slice[fantasy.AgentTool]
@@ -121,8 +123,9 @@ type sessionAgent struct {
 }
 
 type SessionAgentOptions struct {
-	LargeModel           Model
-	SmallModel           Model
+	MainModel            Model
+	BackgroundModel      Model
+	PlanningModel        Model
 	SystemPromptPrefix   string
 	SystemPrompt         string
 	IsSubAgent           bool
@@ -137,9 +140,14 @@ type SessionAgentOptions struct {
 func NewSessionAgent(
 	opts SessionAgentOptions,
 ) SessionAgent {
+	planningModel := opts.PlanningModel
+	if planningModel.Model == nil {
+		planningModel = opts.MainModel
+	}
 	return &sessionAgent{
-		largeModel:           csync.NewValue(opts.LargeModel),
-		smallModel:           csync.NewValue(opts.SmallModel),
+		mainModel:            csync.NewValue(opts.MainModel),
+		backgroundModel:      csync.NewValue(opts.BackgroundModel),
+		planningModel:        csync.NewValue(planningModel),
 		systemPromptPrefix:   csync.NewValue(opts.SystemPromptPrefix),
 		systemPrompt:         csync.NewValue(opts.SystemPrompt),
 		isSubAgent:           opts.IsSubAgent,
@@ -175,7 +183,15 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 
 	// Copy mutable fields under lock to avoid races with SetTools/SetModels.
 	agentTools := a.tools.Copy()
-	largeModel := a.largeModel.Get()
+	var largeModel Model
+	switch call.ModelTier {
+	case config.SelectedModelTypeBackground:
+		largeModel = a.backgroundModel.Get()
+	case config.SelectedModelTypePlanning:
+		largeModel = a.planningModel.Get()
+	default:
+		largeModel = a.mainModel.Get()
+	}
 	systemPrompt := a.systemPrompt.Get()
 	promptPrefix := a.systemPromptPrefix.Get()
 	var instructions strings.Builder
@@ -596,7 +612,7 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 	}
 
 	// Copy mutable fields under lock to avoid races with SetModels.
-	largeModel := a.largeModel.Get()
+	largeModel := a.mainModel.Get()
 	systemPromptPrefix := a.systemPromptPrefix.Get()
 
 	currentSession, err := a.sessions.Get(ctx, sessionID)
@@ -804,13 +820,13 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 		return
 	}
 
-	smallModel := a.smallModel.Get()
-	largeModel := a.largeModel.Get()
+	backgroundModel := a.backgroundModel.Get()
+	mainModel := a.mainModel.Get()
 	systemPromptPrefix := a.systemPromptPrefix.Get()
 
 	var maxOutputTokens int64 = 40
-	if smallModel.CatwalkCfg.CanReason {
-		maxOutputTokens = smallModel.CatwalkCfg.DefaultMaxTokens
+	if backgroundModel.CatwalkCfg.CanReason {
+		maxOutputTokens = backgroundModel.CatwalkCfg.DefaultMaxTokens
 	}
 
 	newAgent := func(m fantasy.LanguageModel, p []byte, tok int64) fantasy.Agent {
@@ -834,26 +850,26 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 		},
 	}
 
-	// Use the small model to generate the title.
-	model := smallModel
+	// Use the background model to generate the title.
+	model := backgroundModel
 	agent := newAgent(model.Model, titlePrompt, maxOutputTokens)
 	resp, err := agent.Stream(ctx, streamCall)
 	if err == nil {
-		// We successfully generated a title with the small model.
-		slog.Debug("Generated title with small model")
+		// We successfully generated a title with the background model.
+		slog.Debug("Generated title with background model")
 	} else {
-		// It didn't work. Let's try with the big model.
-		slog.Error("Error generating title with small model; trying big model", "err", err)
-		model = largeModel
+		// It didn't work. Let's try with the main model.
+		slog.Error("Error generating title with background model; trying main model", "err", err)
+		model = mainModel
 		agent = newAgent(model.Model, titlePrompt, maxOutputTokens)
 		resp, err = agent.Stream(ctx, streamCall)
 		if err == nil {
-			slog.Debug("Generated title with large model")
+			slog.Debug("Generated title with main model")
 		} else {
-			// Welp, the large model didn't work either. Use the default
+			// Welp, the main model didn't work either. Use the default
 			// session name and return.
-			slog.Error("Error generating title with large model", "err", err)
-			saveErr := a.sessions.Rename(ctx, sessionID, DefaultSessionName)
+			slog.Error("Error generating title with main model", "err", err)
+			saveErr := a.sessions.UpdateTitleAndUsage(ctx, sessionID, DefaultSessionName, 0, 0, 0)
 			if saveErr != nil {
 				slog.Error("Failed to save session title", "error", saveErr)
 			}
@@ -1034,9 +1050,14 @@ func (a *sessionAgent) QueuedPromptsList(sessionID string) []string {
 	return prompts
 }
 
-func (a *sessionAgent) SetModels(large Model, small Model) {
-	a.largeModel.Set(large)
-	a.smallModel.Set(small)
+func (a *sessionAgent) SetModels(main Model, background Model, planning Model) {
+	a.mainModel.Set(main)
+	a.backgroundModel.Set(background)
+	if planning.Model != nil {
+		a.planningModel.Set(planning)
+	} else {
+		a.planningModel.Set(main)
+	}
 }
 
 func (a *sessionAgent) SetTools(tools []fantasy.AgentTool) {
@@ -1048,7 +1069,7 @@ func (a *sessionAgent) SetSystemPrompt(systemPrompt string) {
 }
 
 func (a *sessionAgent) Model() Model {
-	return a.largeModel.Get()
+	return a.mainModel.Get()
 }
 
 // convertToToolResult converts a fantasy tool result to a message tool result.

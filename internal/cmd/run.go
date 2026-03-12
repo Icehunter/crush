@@ -46,14 +46,16 @@ crush run --continue "Follow up on your last response"
 
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		var (
-			quiet, _      = cmd.Flags().GetBool("quiet")
-			verbose, _    = cmd.Flags().GetBool("verbose")
-			largeModel, _ = cmd.Flags().GetString("model")
-			smallModel, _ = cmd.Flags().GetString("small-model")
-			sessionID, _  = cmd.Flags().GetString("session")
-			useLast, _    = cmd.Flags().GetBool("continue")
-		)
+		quiet, _ := cmd.Flags().GetBool("quiet")
+		verbose, _ := cmd.Flags().GetBool("verbose")
+		largeModel, _ := cmd.Flags().GetString("model")
+		smallModel, _ := cmd.Flags().GetString("background-model")
+		if sm, _ := cmd.Flags().GetString("small-model"); sm != "" && smallModel == "" {
+			smallModel = sm
+		}
+		planningModel, _ := cmd.Flags().GetString("planning-model")
+		sessionID, _ := cmd.Flags().GetString("session")
+		useLast, _ := cmd.Flags().GetBool("continue")
 
 		// Cancel on SIGINT or SIGTERM.
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
@@ -103,15 +105,18 @@ crush run --continue "Follow up on your last response"
 			event.SetContinueLastSession(true)
 		}
 
-		return app.RunNonInteractive(ctx, os.Stdout, prompt, largeModel, smallModel, quiet || verbose, sessionID, useLast)
+		return app.RunNonInteractive(ctx, os.Stdout, prompt, largeModel, smallModel, planningModel, quiet || verbose, sessionID, useLast)
 	},
 }
 
 func init() {
 	runCmd.Flags().BoolP("quiet", "q", false, "Hide spinner")
 	runCmd.Flags().BoolP("verbose", "v", false, "Show logs")
-	runCmd.Flags().StringP("model", "m", "", "Model to use. Accepts 'model' or 'provider/model' to disambiguate models with the same name across providers")
-	runCmd.Flags().String("small-model", "", "Small model to use. If not provided, uses the default small model for the provider")
+	runCmd.Flags().StringP("model", "m", "", "Main model to use. Accepts 'model' or 'provider/model' to disambiguate models with the same name across providers")
+	runCmd.Flags().String("background-model", "", "Background model to use for cheap tasks. If not provided, uses the default background model for the provider")
+	runCmd.Flags().String("small-model", "", "Deprecated: use --background-model instead")
+	runCmd.Flags().MarkHidden("small-model") //nolint:errcheck
+	runCmd.Flags().String("planning-model", "", "Planning model to use for complex reasoning tasks. If not provided, defaults to the main model")
 	runCmd.Flags().StringP("session", "s", "", "Continue a previous session by ID")
 	runCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
 	runCmd.MarkFlagsMutuallyExclusive("session", "continue")

@@ -1349,14 +1349,14 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 
 		err = configureSelectedModels(testStore(cfg), knownProviders)
 		require.NoError(t, err)
-		large := cfg.Models[SelectedModelTypeLarge]
-		small := cfg.Models[SelectedModelTypeSmall]
-		require.Equal(t, "larger-model", large.Model)
-		require.Equal(t, "openai", large.Provider)
-		require.Equal(t, int64(2000), large.MaxTokens)
-		require.Equal(t, "small-model", small.Model)
-		require.Equal(t, "openai", small.Provider)
-		require.Equal(t, int64(500), small.MaxTokens)
+		main := cfg.Models[SelectedModelTypeMain]
+		background := cfg.Models[SelectedModelTypeBackground]
+		require.Equal(t, "larger-model", main.Model)
+		require.Equal(t, "openai", main.Provider)
+		require.Equal(t, int64(2000), main.MaxTokens)
+		require.Equal(t, "small-model", background.Model)
+		require.Equal(t, "openai", background.Provider)
+		require.Equal(t, int64(500), background.MaxTokens)
 	})
 	t.Run("should be possible to use multiple providers", func(t *testing.T) {
 		knownProviders := []catwalk.Provider{
@@ -1411,14 +1411,14 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 
 		err = configureSelectedModels(testStore(cfg), knownProviders)
 		require.NoError(t, err)
-		large := cfg.Models[SelectedModelTypeLarge]
-		small := cfg.Models[SelectedModelTypeSmall]
-		require.Equal(t, "large-model", large.Model)
-		require.Equal(t, "openai", large.Provider)
-		require.Equal(t, int64(1000), large.MaxTokens)
-		require.Equal(t, "a-small-model", small.Model)
-		require.Equal(t, "anthropic", small.Provider)
-		require.Equal(t, int64(300), small.MaxTokens)
+		main := cfg.Models[SelectedModelTypeMain]
+		background := cfg.Models[SelectedModelTypeBackground]
+		require.Equal(t, "large-model", main.Model)
+		require.Equal(t, "openai", main.Provider)
+		require.Equal(t, int64(1000), main.MaxTokens)
+		require.Equal(t, "a-small-model", background.Model)
+		require.Equal(t, "anthropic", background.Provider)
+		require.Equal(t, int64(300), background.MaxTokens)
 	})
 
 	t.Run("should override the max tokens only", func(t *testing.T) {
@@ -1456,9 +1456,9 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 
 		err = configureSelectedModels(testStore(cfg), knownProviders)
 		require.NoError(t, err)
-		large := cfg.Models[SelectedModelTypeLarge]
-		require.Equal(t, "large-model", large.Model)
-		require.Equal(t, "openai", large.Provider)
-		require.Equal(t, int64(100), large.MaxTokens)
+		main := cfg.Models[SelectedModelTypeMain]
+		require.Equal(t, "large-model", main.Model)
+		require.Equal(t, "openai", main.Provider)
+		require.Equal(t, int64(100), main.MaxTokens)
 	})
 }

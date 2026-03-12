@@ -157,7 +157,12 @@ type UI struct {
 	// continueLastSession is set to continue the most recent session on startup.
 	continueLastSession bool
 
-	lastUserMessageTime int64
+	lastUserMessageTime      int64
+	lastAssistantMsgModel    string
+	lastAssistantMsgProvider string
+
+	// activeTier is the manually selected model tier. Empty means auto.
+	activeTier config.SelectedModelType
 
 	// The width and height of the terminal in cells.
 	width  int
@@ -904,6 +909,10 @@ func (m *UI) setSessionMessages(msgs []message.Message) tea.Cmd {
 			m.lastUserMessageTime = msg.CreatedAt
 			items = append(items, chat.ExtractMessageItems(m.com.Styles, msg, toolResultMap)...)
 		case message.Assistant:
+			if msg.Model != "" {
+				m.lastAssistantMsgModel = msg.Model
+				m.lastAssistantMsgProvider = msg.Provider
+			}
 			items = append(items, chat.ExtractMessageItems(m.com.Styles, msg, toolResultMap)...)
 			if msg.FinishPart() != nil && msg.FinishPart().Reason == message.FinishReasonEndTurn {
 				infoItem := chat.NewAssistantInfoItem(m.com.Styles, msg, m.com.Config(), time.Unix(m.lastUserMessageTime, 0))
@@ -1020,6 +1029,10 @@ func (m *UI) appendSessionMessage(msg message.Message) tea.Cmd {
 			cmds = append(cmds, cmd)
 		}
 	case message.Assistant:
+		if msg.Model != "" {
+			m.lastAssistantMsgModel = msg.Model
+			m.lastAssistantMsgProvider = msg.Provider
+		}
 		items := chat.ExtractMessageItems(m.com.Styles, &msg, nil)
 		for _, item := range items {
 			if animatable, ok := item.(chat.Animatable); ok {
@@ -1449,10 +1462,10 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 
 		if err := m.com.Store().UpdatePreferredModel(config.ScopeGlobal, msg.ModelType, msg.Model); err != nil {
 			cmds = append(cmds, util.ReportError(err))
-		} else if _, ok := cfg.Models[config.SelectedModelTypeSmall]; !ok {
-			// Ensure small model is set is unset.
-			smallModel := m.com.App.GetDefaultSmallModel(providerID)
-			if err := m.com.Store().UpdatePreferredModel(config.ScopeGlobal, config.SelectedModelTypeSmall, smallModel); err != nil {
+		} else if _, ok := cfg.Models[config.SelectedModelTypeBackground]; !ok {
+			// Ensure background model is set if unset.
+			backgroundModel := m.com.App.GetDefaultBackgroundModel(providerID)
+			if err := m.com.Store().UpdatePreferredModel(config.ScopeGlobal, config.SelectedModelTypeBackground, backgroundModel); err != nil {
 				cmds = append(cmds, util.ReportError(err))
 			}
 		}
@@ -1626,6 +1639,9 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 			if cmd := m.openModelsDialog(); cmd != nil {
 				cmds = append(cmds, cmd)
 			}
+			return true
+		case key.Matches(msg, m.keyMap.ShiftTab):
+			m.cycleTier()
 			return true
 		case key.Matches(msg, m.keyMap.Sessions):
 			if cmd := m.openSessionsDialog(); cmd != nil {
@@ -2145,6 +2161,12 @@ func (m *UI) ShortHelp() []key.Binding {
 	k := &m.keyMap
 	tab := k.Tab
 	commands := k.Commands
+	shiftTab := k.ShiftTab
+	tierLabel := string(m.activeTier)
+	if tierLabel == "" {
+		tierLabel = "auto"
+	}
+	shiftTab.SetHelp("shift+tab", tierLabel+" tier")
 	if m.focus == uiFocusEditor && m.textarea.Value() == "" {
 		commands.SetHelp("/ or ctrl+p", "commands")
 	}
@@ -2172,6 +2194,7 @@ func (m *UI) ShortHelp() []key.Binding {
 
 		binds = append(binds,
 			tab,
+			shiftTab,
 			commands,
 			k.Models,
 		)
@@ -2198,6 +2221,7 @@ func (m *UI) ShortHelp() []key.Binding {
 		// if m.session == nil {
 		// no session selected
 		binds = append(binds,
+			shiftTab,
 			commands,
 			k.Models,
 			k.Editor.Newline,
@@ -2905,6 +2929,25 @@ func (m *UI) cacheSidebarLogo(width int) {
 	m.sidebarLogo = renderLogo(m.com.Styles, true, width)
 }
 
+// parseTierPrefix checks if content begins with a tier override prefix
+// (/main, /background, /planning) and returns the tier and stripped content.
+func parseTierPrefix(content string) (config.SelectedModelType, string) {
+	prefixes := []struct {
+		prefix string
+		tier   config.SelectedModelType
+	}{
+		{"/main ", config.SelectedModelTypeMain},
+		{"/background ", config.SelectedModelTypeBackground},
+		{"/planning ", config.SelectedModelTypePlanning},
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(strings.ToLower(content), p.prefix) {
+			return p.tier, strings.TrimSpace(content[len(p.prefix):])
+		}
+	}
+	return "", content
+}
+
 // sendMessage sends a message with the given content and attachments.
 func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.Cmd {
 	if m.com.App.AgentCoordinator == nil {
@@ -2938,8 +2981,14 @@ func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.
 
 	// Capture session ID to avoid race with main goroutine updating m.session.
 	sessionID := m.session.ID
+	// Explicit /prefix takes priority over shift+tab active tier.
+	// Pass empty to let auto-tier heuristics apply when neither is set.
+	forcedTier, content := parseTierPrefix(content)
+	if forcedTier == "" {
+		forcedTier = m.activeTier
+	}
 	cmds = append(cmds, func() tea.Msg {
-		_, err := m.com.App.AgentCoordinator.Run(context.Background(), sessionID, content, attachments...)
+		_, err := m.com.App.AgentCoordinator.RunWithForcedTier(context.Background(), sessionID, content, forcedTier, attachments...)
 		if err != nil {
 			isCancelErr := errors.Is(err, context.Canceled)
 			isPermissionErr := errors.Is(err, permission.ErrorPermissionDenied)
@@ -3045,6 +3094,21 @@ func (m *UI) openQuitDialog() tea.Cmd {
 	quitDialog := dialog.NewQuit(m.com)
 	m.dialog.OpenDialog(quitDialog)
 	return nil
+}
+
+// cycleTier cycles through auto → main → background → planning → auto...
+// "auto" (empty) means use auto-tier heuristics if enabled, otherwise main.
+func (m *UI) cycleTier() {
+	switch m.activeTier {
+	case "":
+		m.activeTier = config.SelectedModelTypeMain
+	case config.SelectedModelTypeMain:
+		m.activeTier = config.SelectedModelTypeBackground
+	case config.SelectedModelTypeBackground:
+		m.activeTier = config.SelectedModelTypePlanning
+	default:
+		m.activeTier = ""
+	}
 }
 
 // openModelsDialog opens the models dialog.
@@ -3204,6 +3268,9 @@ func (m *UI) newSession() tea.Cmd {
 	m.session = nil
 	m.sessionFiles = nil
 	m.sessionFileReads = nil
+	m.lastAssistantMsgModel = ""
+	m.lastAssistantMsgProvider = ""
+	m.activeTier = ""
 	m.setState(uiLanding, uiFocusEditor)
 	m.textarea.Focus()
 	m.chat.Blur()

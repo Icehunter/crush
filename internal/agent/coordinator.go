@@ -48,20 +48,23 @@ import (
 
 // Coordinator errors.
 var (
-	errCoderAgentNotConfigured         = errors.New("coder agent not configured")
-	errModelProviderNotConfigured      = errors.New("model provider not configured")
-	errLargeModelNotSelected           = errors.New("large model not selected")
-	errSmallModelNotSelected           = errors.New("small model not selected")
-	errLargeModelProviderNotConfigured = errors.New("large model provider not configured")
-	errSmallModelProviderNotConfigured = errors.New("small model provider not configured")
-	errLargeModelNotFound              = errors.New("large model not found in provider config")
-	errSmallModelNotFound              = errors.New("small model not found in provider config")
+	errCoderAgentNotConfigured           = errors.New("coder agent not configured")
+	errModelProviderNotConfigured        = errors.New("model provider not configured")
+	errMainModelNotSelected              = errors.New("main model not selected")
+	errBackgroundModelNotSelected        = errors.New("background model not selected")
+	errMainModelProviderNotConfigured    = errors.New("main model provider not configured")
+	errBackgroundModelProviderNotConfigured = errors.New("background model provider not configured")
+	errMainModelNotFound                 = errors.New("main model not found in provider config")
+	errBackgroundModelNotFound           = errors.New("background model not found in provider config")
 )
 
 type Coordinator interface {
 	// INFO: (kujtim) this is not used yet we will use this when we have multiple agents
 	// SetMainAgent(string)
 	Run(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error)
+	// RunWithForcedTier runs like Run but forces a specific model tier, bypassing auto-tier selection.
+	// Pass an empty string to use normal auto-tier behaviour.
+	RunWithForcedTier(ctx context.Context, sessionID, prompt string, tier config.SelectedModelType, attachments ...message.Attachment) (*fantasy.AgentResult, error)
 	Cancel(sessionID string)
 	CancelAll()
 	IsSessionBusy(sessionID string) bool
@@ -84,8 +87,11 @@ type coordinator struct {
 	lspManager  *lsp.Manager
 	notify      pubsub.Publisher[notify.Notification]
 
-	currentAgent SessionAgent
-	agents       map[string]SessionAgent
+	currentAgent    SessionAgent
+	agents          map[string]SessionAgent
+	mainModel       Model
+	backgroundModel Model
+	planningModel   Model
 
 	readyWg errgroup.Group
 }
@@ -135,6 +141,11 @@ func NewCoordinator(
 
 // Run implements Coordinator.
 func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	return c.RunWithForcedTier(ctx, sessionID, prompt, "", attachments...)
+}
+
+// RunWithForcedTier implements Coordinator.
+func (c *coordinator) RunWithForcedTier(ctx context.Context, sessionID string, prompt string, forcedTier config.SelectedModelType, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
@@ -144,7 +155,18 @@ func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, 
 		return nil, fmt.Errorf("failed to update models: %w", err)
 	}
 
-	model := c.currentAgent.Model()
+	tier := c.selectModelTier(prompt, forcedTier)
+	var model Model
+	switch tier {
+	case config.SelectedModelTypeBackground:
+		model = c.backgroundModel
+	case config.SelectedModelTypePlanning:
+		model = c.planningModel
+	default:
+		model = c.mainModel
+	}
+	slog.Debug("Auto-selected model tier", "tier", tier, "model", model.ModelCfg.Model)
+
 	maxTokens := model.CatwalkCfg.DefaultMaxTokens
 	if model.ModelCfg.MaxTokens != 0 {
 		maxTokens = model.ModelCfg.MaxTokens
@@ -187,6 +209,7 @@ func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, 
 			TopK:             topK,
 			FrequencyPenalty: freqPenalty,
 			PresencePenalty:  presPenalty,
+			ModelTier:        tier,
 		})
 	}
 	result, originalErr := run()
@@ -379,16 +402,17 @@ func mergeCallOptions(model Model, cfg config.ProviderConfig) (fantasy.ProviderO
 }
 
 func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, agent config.Agent, isSubAgent bool) (SessionAgent, error) {
-	large, small, err := c.buildAgentModels(ctx, isSubAgent)
+	main, background, planning, err := c.buildAgentModels(ctx, isSubAgent)
 	if err != nil {
 		return nil, err
 	}
 
-	largeProviderCfg, _ := c.cfg.Config().Providers.Get(large.ModelCfg.Provider)
+	mainProviderCfg, _ := c.cfg.Config().Providers.Get(main.ModelCfg.Provider)
 	result := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           large,
-		SmallModel:           small,
-		SystemPromptPrefix:   largeProviderCfg.SystemPromptPrefix,
+		MainModel:            main,
+		BackgroundModel:      background,
+		PlanningModel:        planning,
+		SystemPromptPrefix:   mainProviderCfg.SystemPromptPrefix,
 		SystemPrompt:         "",
 		IsSubAgent:           isSubAgent,
 		DisableAutoSummarize: c.cfg.Config().Options.DisableAutoSummarize,
@@ -400,7 +424,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 	})
 
 	c.readyWg.Go(func() error {
-		systemPrompt, err := prompt.Build(ctx, large.Model.Provider(), large.Model.Model(), c.cfg)
+		systemPrompt, err := prompt.Build(ctx, main.Model.Provider(), main.Model.Model(), c.cfg)
 		if err != nil {
 			return err
 		}
@@ -513,87 +537,124 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent) ([]fan
 }
 
 // TODO: when we support multiple agents we need to change this so that we pass in the agent specific model config
-func (c *coordinator) buildAgentModels(ctx context.Context, isSubAgent bool) (Model, Model, error) {
-	largeModelCfg, ok := c.cfg.Config().Models[config.SelectedModelTypeLarge]
+func (c *coordinator) buildAgentModels(ctx context.Context, isSubAgent bool) (main Model, background Model, planning Model, err error) {
+	mainModelCfg, ok := c.cfg.Config().Models[config.SelectedModelTypeMain]
 	if !ok {
-		return Model{}, Model{}, errLargeModelNotSelected
+		return Model{}, Model{}, Model{}, errMainModelNotSelected
 	}
-	smallModelCfg, ok := c.cfg.Config().Models[config.SelectedModelTypeSmall]
+	backgroundModelCfg, ok := c.cfg.Config().Models[config.SelectedModelTypeBackground]
 	if !ok {
-		return Model{}, Model{}, errSmallModelNotSelected
-	}
-
-	largeProviderCfg, ok := c.cfg.Config().Providers.Get(largeModelCfg.Provider)
-	if !ok {
-		return Model{}, Model{}, errLargeModelProviderNotConfigured
+		return Model{}, Model{}, Model{}, errBackgroundModelNotSelected
 	}
 
-	largeProvider, err := c.buildProvider(largeProviderCfg, largeModelCfg, isSubAgent)
+	mainProviderCfg, ok := c.cfg.Config().Providers.Get(mainModelCfg.Provider)
+	if !ok {
+		return Model{}, Model{}, Model{}, errMainModelProviderNotConfigured
+	}
+
+	mainProvider, err := c.buildProvider(mainProviderCfg, mainModelCfg, isSubAgent)
 	if err != nil {
-		return Model{}, Model{}, err
+		return Model{}, Model{}, Model{}, err
 	}
 
-	smallProviderCfg, ok := c.cfg.Config().Providers.Get(smallModelCfg.Provider)
+	backgroundProviderCfg, ok := c.cfg.Config().Providers.Get(backgroundModelCfg.Provider)
 	if !ok {
-		return Model{}, Model{}, errSmallModelProviderNotConfigured
+		return Model{}, Model{}, Model{}, errBackgroundModelProviderNotConfigured
 	}
 
-	smallProvider, err := c.buildProvider(smallProviderCfg, smallModelCfg, true)
+	backgroundProvider, err := c.buildProvider(backgroundProviderCfg, backgroundModelCfg, true)
 	if err != nil {
-		return Model{}, Model{}, err
+		return Model{}, Model{}, Model{}, err
 	}
 
-	var largeCatwalkModel *catwalk.Model
-	var smallCatwalkModel *catwalk.Model
+	var mainCatwalkModel *catwalk.Model
+	var backgroundCatwalkModel *catwalk.Model
 
-	for _, m := range largeProviderCfg.Models {
-		if m.ID == largeModelCfg.Model {
-			largeCatwalkModel = &m
+	for _, m := range mainProviderCfg.Models {
+		if m.ID == mainModelCfg.Model {
+			mainCatwalkModel = &m
 		}
 	}
-	for _, m := range smallProviderCfg.Models {
-		if m.ID == smallModelCfg.Model {
-			smallCatwalkModel = &m
+	for _, m := range backgroundProviderCfg.Models {
+		if m.ID == backgroundModelCfg.Model {
+			backgroundCatwalkModel = &m
 		}
 	}
 
-	if largeCatwalkModel == nil {
-		return Model{}, Model{}, errLargeModelNotFound
+	if mainCatwalkModel == nil {
+		return Model{}, Model{}, Model{}, errMainModelNotFound
 	}
 
-	if smallCatwalkModel == nil {
-		return Model{}, Model{}, errSmallModelNotFound
+	if backgroundCatwalkModel == nil {
+		return Model{}, Model{}, Model{}, errBackgroundModelNotFound
 	}
 
-	largeModelID := largeModelCfg.Model
-	smallModelID := smallModelCfg.Model
+	mainModelID := mainModelCfg.Model
+	backgroundModelID := backgroundModelCfg.Model
 
-	if largeModelCfg.Provider == openrouter.Name && isExactoSupported(largeModelID) {
-		largeModelID += ":exacto"
+	if mainModelCfg.Provider == openrouter.Name && isExactoSupported(mainModelID) {
+		mainModelID += ":exacto"
 	}
 
-	if smallModelCfg.Provider == openrouter.Name && isExactoSupported(smallModelID) {
-		smallModelID += ":exacto"
+	if backgroundModelCfg.Provider == openrouter.Name && isExactoSupported(backgroundModelID) {
+		backgroundModelID += ":exacto"
 	}
 
-	largeModel, err := largeProvider.LanguageModel(ctx, largeModelID)
+	mainLM, err := mainProvider.LanguageModel(ctx, mainModelID)
 	if err != nil {
-		return Model{}, Model{}, err
+		return Model{}, Model{}, Model{}, err
 	}
-	smallModel, err := smallProvider.LanguageModel(ctx, smallModelID)
+	backgroundLM, err := backgroundProvider.LanguageModel(ctx, backgroundModelID)
 	if err != nil {
-		return Model{}, Model{}, err
+		return Model{}, Model{}, Model{}, err
 	}
 
-	return Model{
-			Model:      largeModel,
-			CatwalkCfg: *largeCatwalkModel,
-			ModelCfg:   largeModelCfg,
-		}, Model{
-			Model:      smallModel,
-			CatwalkCfg: *smallCatwalkModel,
-			ModelCfg:   smallModelCfg,
-		}, nil
+	mainModel := Model{
+		Model:      mainLM,
+		CatwalkCfg: *mainCatwalkModel,
+		ModelCfg:   mainModelCfg,
+	}
+	backgroundModel := Model{
+		Model:      backgroundLM,
+		CatwalkCfg: *backgroundCatwalkModel,
+		ModelCfg:   backgroundModelCfg,
+	}
+
+	// Planning model: use explicitly configured planning model if available,
+	// otherwise fall back to main model.
+	planningModelCfg, hasPlanningCfg := c.cfg.Config().Models[config.SelectedModelTypePlanning]
+	if hasPlanningCfg && planningModelCfg.Model != mainModelCfg.Model {
+		planningProviderCfg, ok := c.cfg.Config().Providers.Get(planningModelCfg.Provider)
+		if ok {
+			planningProvider, planErr := c.buildProvider(planningProviderCfg, planningModelCfg, isSubAgent)
+			if planErr == nil {
+				planningModelID := planningModelCfg.Model
+				if planningModelCfg.Provider == openrouter.Name && isExactoSupported(planningModelID) {
+					planningModelID += ":exacto"
+				}
+				planningLM, planErr := planningProvider.LanguageModel(ctx, planningModelID)
+				if planErr == nil {
+					var planningCatwalkModel *catwalk.Model
+					for _, m := range planningProviderCfg.Models {
+						if m.ID == planningModelCfg.Model {
+							planningCatwalkModel = &m
+							break
+						}
+					}
+					if planningCatwalkModel != nil {
+						return mainModel, backgroundModel, Model{
+							Model:      planningLM,
+							CatwalkCfg: *planningCatwalkModel,
+							ModelCfg:   planningModelCfg,
+						}, nil
+					}
+				}
+			}
+		}
+	}
+
+	// Fall back planning to main.
+	return mainModel, backgroundModel, mainModel, nil
 }
 
 // addAnthropicBeta appends a beta tag to the anthropic-beta header, preserving existing values.
@@ -870,6 +931,33 @@ func isExactoSupported(modelID string) bool {
 	return slices.Contains(supportedModels, modelID)
 }
 
+func (c *coordinator) selectModelTier(prompt string, forcedTier config.SelectedModelType) config.SelectedModelType {
+	if forcedTier != "" {
+		return forcedTier
+	}
+	opts := c.cfg.Config().Options
+	if opts == nil || opts.AutoModelTier == nil || !*opts.AutoModelTier {
+		return config.SelectedModelTypeMain
+	}
+	tier := classifyPromptTier(prompt)
+	mainCfg := c.cfg.Config().Models[config.SelectedModelTypeMain]
+	switch tier {
+	case config.SelectedModelTypeBackground:
+		if bg, ok := c.cfg.Config().Models[config.SelectedModelTypeBackground]; ok {
+			if bg.Model != mainCfg.Model || bg.Provider != mainCfg.Provider {
+				return tier
+			}
+		}
+	case config.SelectedModelTypePlanning:
+		if pl, ok := c.cfg.Config().Models[config.SelectedModelTypePlanning]; ok {
+			if pl.Model != mainCfg.Model || pl.Provider != mainCfg.Provider {
+				return tier
+			}
+		}
+	}
+	return config.SelectedModelTypeMain
+}
+
 func (c *coordinator) Cancel(sessionID string) {
 	c.currentAgent.Cancel(sessionID)
 }
@@ -896,11 +984,14 @@ func (c *coordinator) Model() Model {
 
 func (c *coordinator) UpdateModels(ctx context.Context) error {
 	// build the models again so we make sure we get the latest config
-	large, small, err := c.buildAgentModels(ctx, false)
+	main, background, planning, err := c.buildAgentModels(ctx, false)
 	if err != nil {
 		return err
 	}
-	c.currentAgent.SetModels(large, small)
+	c.currentAgent.SetModels(main, background, planning)
+	c.mainModel = main
+	c.backgroundModel = background
+	c.planningModel = planning
 
 	agentCfg, ok := c.cfg.Config().Agents[config.AgentCoder]
 	if !ok {

@@ -190,14 +190,14 @@ func (app *App) resolveSession(ctx context.Context, continueSessionID string, us
 
 // RunNonInteractive runs the application in non-interactive mode with the
 // given prompt, printing to stdout.
-func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt, largeModel, smallModel string, hideSpinner bool, continueSessionID string, useLast bool) error {
+func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt, largeModel, smallModel, planningModel string, hideSpinner bool, continueSessionID string, useLast bool) error {
 	slog.Info("Running in non-interactive mode")
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	if largeModel != "" || smallModel != "" {
-		if err := app.overrideModelsForNonInteractive(ctx, largeModel, smallModel); err != nil {
+	if largeModel != "" || smallModel != "" || planningModel != "" {
+		if err := app.overrideModelsForNonInteractive(ctx, largeModel, smallModel, planningModel); err != nil {
 			return fmt.Errorf("failed to override models: %w", err)
 		}
 	}
@@ -370,9 +370,9 @@ func (app *App) UpdateAgentModel(ctx context.Context) error {
 // overrides the model configurations, then rebuilds the agent.
 // Format: "model-name" (searches all providers) or "provider/model-name".
 // Model matching is case-insensitive.
-// If largeModel is provided but smallModel is not, the small model defaults to
-// the provider's default small model.
-func (app *App) overrideModelsForNonInteractive(ctx context.Context, largeModel, smallModel string) error {
+// If largeModel is provided but smallModel is not, the background model defaults to
+// the provider's default background model.
+func (app *App) overrideModelsForNonInteractive(ctx context.Context, largeModel, smallModel, planningModel string) error {
 	providers := app.config.Config().Providers.Copy()
 
 	largeMatches, smallMatches, err := findModels(providers, largeModel, smallModel)
@@ -380,51 +380,74 @@ func (app *App) overrideModelsForNonInteractive(ctx context.Context, largeModel,
 		return err
 	}
 
-	var largeProviderID string
+	var mainProviderID string
 
-	// Override large model.
+	// Override main model.
 	if largeModel != "" {
-		found, err := validateMatches(largeMatches, largeModel, "large")
+		found, err := validateMatches(largeMatches, largeModel, "main")
 		if err != nil {
 			return err
 		}
-		largeProviderID = found.provider
-		slog.Info("Overriding large model for non-interactive run", "provider", found.provider, "model", found.modelID)
-		app.config.Config().Models[config.SelectedModelTypeLarge] = config.SelectedModel{
+		mainProviderID = found.provider
+		slog.Info("Overriding main model for non-interactive run", "provider", found.provider, "model", found.modelID)
+		app.config.Config().Models[config.SelectedModelTypeMain] = config.SelectedModel{
 			Provider: found.provider,
 			Model:    found.modelID,
 		}
 	}
 
-	// Override small model.
+	// Override background model.
 	switch {
 	case smallModel != "":
-		found, err := validateMatches(smallMatches, smallModel, "small")
+		found, err := validateMatches(smallMatches, smallModel, "background")
 		if err != nil {
 			return err
 		}
-		slog.Info("Overriding small model for non-interactive run", "provider", found.provider, "model", found.modelID)
-		app.config.Config().Models[config.SelectedModelTypeSmall] = config.SelectedModel{
+		slog.Info("Overriding background model for non-interactive run", "provider", found.provider, "model", found.modelID)
+		app.config.Config().Models[config.SelectedModelTypeBackground] = config.SelectedModel{
 			Provider: found.provider,
 			Model:    found.modelID,
 		}
 
 	case largeModel != "":
-		// No small model specified, but large model was - use provider's default.
-		smallCfg := app.GetDefaultSmallModel(largeProviderID)
-		app.config.Config().Models[config.SelectedModelTypeSmall] = smallCfg
+		// No background model specified, but main model was - use provider's default.
+		bgCfg := app.GetDefaultBackgroundModel(mainProviderID)
+		app.config.Config().Models[config.SelectedModelTypeBackground] = bgCfg
+	}
+
+	// Override planning model if specified.
+	if planningModel != "" {
+		planningMatches, _, err := findModels(providers, planningModel, "")
+		if err != nil {
+			return err
+		}
+		found, err := validateMatches(planningMatches, planningModel, "planning")
+		if err != nil {
+			return err
+		}
+		slog.Info("Overriding planning model for non-interactive run", "provider", found.provider, "model", found.modelID)
+		app.config.Config().Models[config.SelectedModelTypePlanning] = config.SelectedModel{
+			Provider: found.provider,
+			Model:    found.modelID,
+		}
 	}
 
 	return app.AgentCoordinator.UpdateModels(ctx)
 }
 
-// GetDefaultSmallModel returns the default small model for the given
-// provider. Falls back to the large model if no default is found.
+// GetDefaultSmallModel returns the default background model for the given provider.
+// Deprecated: use GetDefaultBackgroundModel instead.
 func (app *App) GetDefaultSmallModel(providerID string) config.SelectedModel {
-	cfg := app.config.Config()
-	largeModelCfg := cfg.Models[config.SelectedModelTypeLarge]
+	return app.GetDefaultBackgroundModel(providerID)
+}
 
-	// Find the provider in the known providers list to get its default small model.
+// GetDefaultBackgroundModel returns the default background model for the given
+// provider. Falls back to the main model if no default is found.
+func (app *App) GetDefaultBackgroundModel(providerID string) config.SelectedModel {
+	cfg := app.config.Config()
+	mainModelCfg := cfg.Models[config.SelectedModelTypeMain]
+
+	// Find the provider in the known providers list to get its default background model.
 	knownProviders, _ := config.Providers(cfg)
 	var knownProvider *catwalk.Provider
 	for _, p := range knownProviders {
@@ -434,23 +457,23 @@ func (app *App) GetDefaultSmallModel(providerID string) config.SelectedModel {
 		}
 	}
 
-	// For unknown/local providers, use the large model as small.
+	// For unknown/local providers, use the main model as background.
 	if knownProvider == nil {
-		slog.Warn("Using large model as small model for unknown provider", "provider", providerID, "model", largeModelCfg.Model)
-		return largeModelCfg
+		slog.Warn("Using main model as background model for unknown provider", "provider", providerID, "model", mainModelCfg.Model)
+		return mainModelCfg
 	}
 
-	defaultSmallModelID := knownProvider.DefaultSmallModelID
-	model := cfg.GetModel(providerID, defaultSmallModelID)
+	defaultBackgroundModelID := knownProvider.DefaultSmallModelID
+	model := cfg.GetModel(providerID, defaultBackgroundModelID)
 	if model == nil {
-		slog.Warn("Default small model not found, using large model", "provider", providerID, "model", largeModelCfg.Model)
-		return largeModelCfg
+		slog.Warn("Default background model not found, using main model", "provider", providerID, "model", mainModelCfg.Model)
+		return mainModelCfg
 	}
 
-	slog.Info("Using provider default small model", "provider", providerID, "model", defaultSmallModelID)
+	slog.Info("Using provider default background model", "provider", providerID, "model", defaultBackgroundModelID)
 	return config.SelectedModel{
 		Provider:        providerID,
-		Model:           defaultSmallModelID,
+		Model:           defaultBackgroundModelID,
 		MaxTokens:       model.DefaultMaxTokens,
 		ReasoningEffort: model.DefaultReasoningEffort,
 	}
