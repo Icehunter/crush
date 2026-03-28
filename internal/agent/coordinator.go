@@ -666,8 +666,128 @@ func addAnthropicBeta(headers map[string]string, tag string) {
 	}
 }
 
+// oauthTransport wraps an http.RoundTripper to make OAuth requests compatible
+// with the Anthropic API's Claude Code validation. It:
+// 1. Injects ?beta=true query param (required for the beta messages endpoint)
+// 2. Prepends the Claude Code system prompt identity
+// 3. Renames tool names to match Claude Code's expected names
+type oauthTransport struct {
+	base http.RoundTripper
+}
+
+// Claude Code tool name mapping (crush name → Claude Code name).
+var claudeCodeToolNames = map[string]string{
+	"bash":           "Bash",
+	"edit":           "Edit",
+	"multiedit":      "Edit",
+	"write":          "Write",
+	"view":           "Read",
+	"glob":           "Glob",
+	"grep":           "Grep",
+	"fetch":          "WebFetch",
+	"agentic_fetch":  "WebFetch",
+	"agent":          "Task",
+	"web_search":     "WebSearch",
+	"ask":            "AskUserQuestion",
+	"download":       "WebFetch",
+	"notebook_edit":  "NotebookEdit",
+	"job_kill":       "KillShell",
+	"job_output":     "TaskOutput",
+	"todo":           "TodoWrite",
+	"skill":          "Skill",
+}
+
+const claudeCodeSystemPrefix = "You are Claude Code, Anthropic's official CLI for Claude."
+
+func (t *oauthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Add ?beta=true
+	q := req.URL.Query()
+	if !q.Has("beta") {
+		q.Set("beta", "true")
+		req.URL.RawQuery = q.Encode()
+	}
+
+	// Only transform POST requests to /v1/messages
+	if req.Method != http.MethodPost || !strings.HasSuffix(req.URL.Path, "/v1/messages") {
+		return t.base.RoundTrip(req)
+	}
+
+	if req.Body == nil {
+		return t.base.RoundTrip(req)
+	}
+
+	bodyBytes, err := io.ReadAll(req.Body)
+	req.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+		// Not JSON, pass through
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		req.ContentLength = int64(len(bodyBytes))
+		return t.base.RoundTrip(req)
+	}
+
+	// Prepend Claude Code identity to system prompt
+	if system, ok := body["system"].([]any); ok {
+		hasIdentity := false
+		for _, s := range system {
+			if m, ok := s.(map[string]any); ok {
+				if text, ok := m["text"].(string); ok && strings.HasPrefix(text, claudeCodeSystemPrefix) {
+					hasIdentity = true
+					break
+				}
+			}
+		}
+		if !hasIdentity {
+			identity := map[string]any{"type": "text", "text": claudeCodeSystemPrefix}
+			body["system"] = append([]any{identity}, system...)
+		}
+	} else {
+		body["system"] = []any{map[string]any{"type": "text", "text": claudeCodeSystemPrefix}}
+	}
+
+	// Rename tool names, skipping duplicates.
+	if tools, ok := body["tools"].([]any); ok {
+		seen := map[string]bool{}
+		// First pass: collect names that are already present (e.g. "Read", "Write").
+		for _, tool := range tools {
+			if m, ok := tool.(map[string]any); ok {
+				if name, ok := m["name"].(string); ok {
+					seen[name] = true
+				}
+			}
+		}
+		// Second pass: rename, skipping if target name already exists.
+		for _, tool := range tools {
+			if m, ok := tool.(map[string]any); ok {
+				if name, ok := m["name"].(string); ok {
+					if ccName, found := claudeCodeToolNames[name]; found && !seen[ccName] {
+						m["name"] = ccName
+						seen[ccName] = true
+					}
+				}
+			}
+		}
+	}
+
+	modified, err := json.Marshal(body)
+	if err != nil {
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		req.ContentLength = int64(len(bodyBytes))
+		return t.base.RoundTrip(req)
+	}
+
+	req.Body = io.NopCloser(bytes.NewReader(modified))
+	req.ContentLength = int64(len(modified))
+	return t.base.RoundTrip(req)
+}
+
 func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map[string]string, providerID string) (fantasy.Provider, error) {
 	var opts []anthropic.Option
+	var useOAuth bool
 
 	switch {
 	case strings.HasPrefix(apiKey, "Bearer "):
@@ -676,10 +796,14 @@ func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map
 		headers["Authorization"] = apiKey
 	case strings.HasPrefix(apiKey, claudecode.OAuthTokenPrefix):
 		// Claude Code subscription OAuth token — must use Authorization: Bearer, not X-Api-Key,
-		// and requires the oauth beta header for the Anthropic API to accept it.
+		// and requires the oauth and claude-code beta headers plus identity headers.
 		os.Setenv("ANTHROPIC_API_KEY", "")
 		headers["Authorization"] = "Bearer " + apiKey
+		addAnthropicBeta(headers, "claude-code-20250219")
 		addAnthropicBeta(headers, "oauth-2025-04-20")
+		headers["User-Agent"] = "claude-cli/2.1.86"
+		headers["x-app"] = "cli"
+		useOAuth = true
 	case providerID == string(catwalk.InferenceProviderMiniMax) || providerID == string(catwalk.InferenceProviderMiniMaxChina):
 		// NOTE: Prevent the SDK from picking up the API key from env.
 		os.Setenv("ANTHROPIC_API_KEY", "")
@@ -697,10 +821,20 @@ func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map
 		opts = append(opts, anthropic.WithBaseURL(baseURL))
 	}
 
-	if c.cfg.Config().Options.Debug {
-		httpClient := log.NewHTTPClient()
-		opts = append(opts, anthropic.WithHTTPClient(httpClient))
+	// OAuth tokens require the beta messages endpoint (?beta=true query param).
+	// The fantasy layer uses Messages.New (non-beta path), so we inject the query
+	// param via a custom transport to match what the JS SDK does.
+	if useOAuth || c.cfg.Config().Options.Debug {
+		base := http.DefaultTransport
+		if c.cfg.Config().Options.Debug {
+			base = &log.HTTPRoundTripLogger{Transport: base}
+		}
+		if useOAuth {
+			base = &oauthTransport{base: base}
+		}
+		opts = append(opts, anthropic.WithHTTPClient(&http.Client{Transport: base}))
 	}
+
 	return anthropic.New(opts...)
 }
 
@@ -866,6 +1000,13 @@ func (c *coordinator) buildHyperProvider(apiKey string) (fantasy.Provider, error
 	return hyper.New(opts...)
 }
 
+// supportsAdaptiveThinking returns true for models that have interleaved thinking
+// built-in and don't need the interleaved-thinking beta header.
+func supportsAdaptiveThinking(modelID string) bool {
+	return strings.Contains(modelID, "claude-opus-4") ||
+		strings.Contains(modelID, "claude-sonnet-4")
+}
+
 func (c *coordinator) isAnthropicThinking(model config.SelectedModel) bool {
 	if model.Think {
 		return true
@@ -881,7 +1022,9 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 	}
 
 	// handle special headers for anthropic
-	if providerCfg.Type == anthropic.Name && c.isAnthropicThinking(model) {
+	// Adaptive thinking models (opus 4.6, sonnet 4.6) have interleaved thinking built-in;
+	// the beta header is deprecated on these and can cause errors with OAuth tokens.
+	if providerCfg.Type == anthropic.Name && c.isAnthropicThinking(model) && !supportsAdaptiveThinking(model.Model) {
 		addAnthropicBeta(headers, "interleaved-thinking-2025-05-14")
 	}
 

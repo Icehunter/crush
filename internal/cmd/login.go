@@ -13,6 +13,7 @@ import (
 	hyperp "github.com/charmbracelet/crush/internal/agent/hyper"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/oauth"
+	"github.com/charmbracelet/crush/internal/oauth/claudecode"
 	"github.com/charmbracelet/crush/internal/oauth/copilot"
 	"github.com/charmbracelet/crush/internal/oauth/hyper"
 	"github.com/pkg/browser"
@@ -207,33 +208,60 @@ func getLoginContext() context.Context {
 }
 
 func loginClaudeCode(cfg *config.ConfigStore) error {
-	// CLAUDE_CODE_OAUTH_TOKEN is set by `claude setup-token` — a long-lived (~1 year)
-	// sk-ant-oat* token that works directly with the Anthropic API.
-	apiKey := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
-	if apiKey == "" {
-		fmt.Println("CLAUDE_CODE_OAUTH_TOKEN environment variable is not set.")
-		fmt.Println()
-		fmt.Println("Generate a long-lived token with:")
-		fmt.Println("  claude setup-token")
-		fmt.Println()
-		fmt.Println("Then set it in your shell and re-run:")
-		fmt.Println("  export CLAUDE_CODE_OAUTH_TOKEN=<token>")
-		fmt.Println("  crush login claude")
-		return fmt.Errorf("CLAUDE_CODE_OAUTH_TOKEN not set")
+	// Always do the full OAuth PKCE flow for interactive terminals.
+	// The CLAUDE_CODE_OAUTH_TOKEN env var (from setup-token) only supports haiku;
+	// the browser flow grants full-scope tokens that work with all models.
+	ctx := getLoginContext()
+
+	verifier, challenge, err := claudecode.GeneratePKCE()
+	if err != nil {
+		return err
 	}
 
-	if !strings.HasPrefix(apiKey, "sk-ant-oat") {
-		return fmt.Errorf("CLAUDE_CODE_OAUTH_TOKEN does not look like a valid Claude OAuth token (expected sk-ant-oat* prefix)")
+	authURL := claudecode.BuildAuthorizeURL(challenge)
+
+	fmt.Println("Opening your browser to authorize Crush with your Claude account...")
+	fmt.Println()
+	fmt.Println(lipgloss.NewStyle().Hyperlink(authURL, "id=claude").Render(authURL))
+	fmt.Println()
+
+	if err := browser.OpenURL(authURL); err != nil {
+		fmt.Println("Could not open the URL. Please open it manually in your browser.")
 	}
 
-	if err := cfg.SetConfigField(config.ScopeGlobal, "providers.anthropic.api_key", apiKey); err != nil {
+	fmt.Println("After authorizing, paste the code from the redirect page below.")
+	fmt.Println("The code is in the format: code#state")
+	fmt.Print("> ")
+
+	var authCode string
+	if _, err := fmt.Scanln(&authCode); err != nil {
+		return fmt.Errorf("failed to read authorization code: %w", err)
+	}
+
+	authCode = strings.TrimSpace(authCode)
+	parts := strings.SplitN(authCode, "#", 2)
+	code := parts[0]
+	state := ""
+	if len(parts) > 1 {
+		state = parts[1]
+	}
+
+	fmt.Println("Exchanging authorization code for tokens...")
+	token, err := claudecode.ExchangeCode(ctx, code, state, verifier)
+	if err != nil {
+		return fmt.Errorf("token exchange failed: %w", err)
+	}
+
+	if err := cmp.Or(
+		cfg.SetConfigField(config.ScopeGlobal, "providers.anthropic.api_key", token.AccessToken),
+		cfg.SetConfigField(config.ScopeGlobal, "providers.anthropic.oauth", token),
+	); err != nil {
 		return err
 	}
 
 	fmt.Println()
 	fmt.Println("You're now authenticated with Claude!")
-	fmt.Println("Token will be valid for approximately 1 year.")
-	fmt.Println("Run `crush login claude` again when it expires.")
+	fmt.Println("Your token will auto-refresh when it expires.")
 	return nil
 }
 
