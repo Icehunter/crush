@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T01",
+  "unitId": "M001/S01/T01",
+  "timestamp": 1774636328636,
+  "passed": false,
+  "discoverySource": "preference",
+  "checks": [
+    {
+      "command": "go test ./...",
+      "exitCode": 0,
+      "durationMs": 15070,
+      "verdict": "pass"
+    },
+    {
+      "command": "go vet ./...",
+      "exitCode": 1,
+      "durationMs": 4858,
+      "verdict": "fail"
+    }
+  ],
+  "retryAttempt": 1,
+  "maxRetries": 2
+}

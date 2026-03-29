@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"github.com/charmbracelet/crush/internal/event"
 	"github.com/charmbracelet/crush/internal/filetracker"
 	"github.com/charmbracelet/crush/internal/format"
+	"github.com/charmbracelet/crush/internal/gsd"
 	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/log"
 	"github.com/charmbracelet/crush/internal/lsp"
@@ -56,6 +58,7 @@ type App struct {
 	History     history.Service
 	Permissions permission.Service
 	FileTracker filetracker.Service
+	Queries     *db.Queries
 
 	AgentCoordinator agent.Coordinator
 
@@ -93,6 +96,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore) (*App, er
 		History:     files,
 		Permissions: permission.NewPermissionService(store.WorkingDir(), skipPermissionsRequests, allowedTools),
 		FileTracker: filetracker.NewService(q),
+		Queries:     q,
 		LSPManager:  lsp.NewManager(store),
 
 		globalCtx: ctx,
@@ -106,6 +110,9 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore) (*App, er
 	}
 
 	app.setupEvents()
+
+	// Load GSD preferences and apply to auto config. Failures are non-fatal.
+	applyGSDPreferences(cfg, store.WorkingDir())
 
 	// Check for updates in the background.
 	go app.checkForUpdates(ctx)
@@ -490,6 +497,7 @@ func (app *App) setupEvents() {
 	setupSubscriber(ctx, app.serviceEventsWG, "agent-notifications", app.agentNotifications.Subscribe, app.events)
 	setupSubscriber(ctx, app.serviceEventsWG, "mcp", mcp.SubscribeEvents, app.events)
 	setupSubscriber(ctx, app.serviceEventsWG, "lsp", SubscribeLSPEvents, app.events)
+	setupSubscriber(ctx, app.serviceEventsWG, "auto", SubscribeAutoEvents, app.events)
 	cleanupFunc := func(context.Context) error {
 		cancel()
 		app.serviceEventsWG.Wait()
@@ -661,4 +669,28 @@ func (app *App) checkForUpdates(ctx context.Context) {
 		LatestVersion:  info.Latest,
 		IsDevelopment:  info.IsDevelopment(),
 	}
+}
+
+// applyGSDPreferences loads global and project GSD preferences and applies
+// them to the auto config. Failures are logged as warnings, not errors.
+func applyGSDPreferences(cfg *config.Config, workingDir string) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		slog.Warn("Failed to determine home directory for GSD preferences", "error", err)
+		return
+	}
+
+	globalPath := filepath.Join(homeDir, ".gsd", "PREFERENCES.md")
+	projectPath := filepath.Join(workingDir, ".gsd", "PREFERENCES.md")
+
+	prefs, err := gsd.LoadPreferences(globalPath, projectPath)
+	if err != nil {
+		slog.Warn("Failed to load GSD preferences", "error", err)
+		return
+	}
+
+	if cfg.Auto == nil {
+		cfg.Auto = &config.AutoConfig{}
+	}
+	prefs.ApplyToAutoConfig(cfg.Auto)
 }

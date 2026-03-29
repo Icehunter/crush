@@ -31,6 +31,15 @@ type Message struct {
 	IsSummaryMessage int64          `json:"is_summary_message"`
 }
 
+type Milestone struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Status    string `json:"status"`
+	Phase     string `json:"phase"`
+	CreatedAt int64  `json:"created_at"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
 type ReadFile struct {
 	SessionID string `json:"session_id"`
 	Path      string `json:"path"`
@@ -49,4 +58,29 @@ type Session struct {
 	CreatedAt        int64          `json:"created_at"`
 	SummaryMessageID sql.NullString `json:"summary_message_id"`
 	Todos            sql.NullString `json:"todos"`
+}
+
+type Slice struct {
+	ID          string         `json:"id"`
+	MilestoneID string         `json:"milestone_id"`
+	Title       string         `json:"title"`
+	Status      string         `json:"status"`
+	Phase       string         `json:"phase"`
+	SortOrder   int64          `json:"sort_order"`
+	DependsOn   sql.NullString `json:"depends_on"`
+	CreatedAt   int64          `json:"created_at"`
+	UpdatedAt   int64          `json:"updated_at"`
+}
+
+type Task struct {
+	ID          string         `json:"id"`
+	SliceID     string         `json:"slice_id"`
+	MilestoneID string         `json:"milestone_id"`
+	Title       string         `json:"title"`
+	Status      string         `json:"status"`
+	Phase       string         `json:"phase"`
+	SortOrder   int64          `json:"sort_order"`
+	Description sql.NullString `json:"description"`
+	CreatedAt   int64          `json:"created_at"`
+	UpdatedAt   int64          `json:"updated_at"`
 }

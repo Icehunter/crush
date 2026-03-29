@@ -56,15 +56,19 @@ type KeyMap struct {
 		Switch key.Binding
 	}
 
+	Auto struct {
+		Toggle key.Binding
+	}
+
 	// Global key maps
-	Quit      key.Binding
-	Help      key.Binding
-	Commands  key.Binding
-	Models    key.Binding
-	Suspend   key.Binding
-	Sessions  key.Binding
-	Tab       key.Binding
-	ShiftTab  key.Binding
+	Quit     key.Binding
+	Help     key.Binding
+	Commands key.Binding
+	Models   key.Binding
+	Suspend  key.Binding
+	Sessions key.Binding
+	Tab      key.Binding
+	ShiftTab key.Binding
 }
 
 func DefaultKeyMap() KeyMap {
@@ -265,6 +269,11 @@ func DefaultKeyMap() KeyMap {
 	km.Initialize.Enter = key.NewBinding(
 		key.WithKeys("enter"),
 		key.WithHelp("enter", "select"),
+	)
+
+	km.Auto.Toggle = key.NewBinding(
+		key.WithKeys("ctrl+a"),
+		key.WithHelp("ctrl+a", "auto"),
 	)
 
 	return km

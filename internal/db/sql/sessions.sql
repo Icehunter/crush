@@ -52,6 +52,11 @@ SET
 WHERE id = ?
 RETURNING *;
 
+-- name: SumChildSessionCosts :one
+SELECT CAST(COALESCE(SUM(cost), 0) AS REAL) AS total_cost
+FROM sessions
+WHERE parent_session_id = ?;
+
 -- name: UpdateSessionTitleAndUsage :exec
 UPDATE sessions
 SET
@@ -72,3 +77,9 @@ WHERE id = ?;
 -- name: DeleteSession :exec
 DELETE FROM sessions
 WHERE id = ?;
+
+-- name: GetSessionTokenUsage :one
+SELECT CAST(COALESCE(SUM(prompt_tokens), 0) AS INTEGER) AS total_prompt_tokens,
+       CAST(COALESCE(SUM(completion_tokens), 0) AS INTEGER) AS total_completion_tokens
+FROM sessions
+WHERE parent_session_id = ?;

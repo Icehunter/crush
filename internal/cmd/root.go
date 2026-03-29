@@ -17,7 +17,8 @@ import (
 	"charm.land/fang/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
-	"github.com/charmbracelet/crush/internal/app"
+	appPkg "github.com/charmbracelet/crush/internal/app"
+	"github.com/charmbracelet/crush/internal/auto"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/db"
 	"github.com/charmbracelet/crush/internal/event"
@@ -112,6 +113,19 @@ crush --continue
 		com := common.DefaultCommon(app)
 		model := ui.New(com, sessionID, continueLast)
 
+		// Wire auto-mode engine controller into the TUI.
+		if app.Queries != nil && app.AgentCoordinator != nil {
+			engine, buildErr := buildAutoEngine(app)
+			if buildErr == nil {
+				querier := auto.NewDBStateQuerier(app.Queries)
+				ctrl := auto.NewEngineController(engine, querier)
+				model.SetAutoController(ctrl)
+			}
+		}
+		if autoCfg := app.Config().Auto; autoCfg != nil && autoCfg.MilestoneID != "" {
+			model.SetAutoMilestoneID(autoCfg.MilestoneID)
+		}
+
 		program := tea.NewProgram(
 			model,
 			tea.WithEnvironment(env),
@@ -184,7 +198,7 @@ func supportsProgressBar() bool {
 	return isWindowsTerminal || strings.Contains(strings.ToLower(termProg), "ghostty")
 }
 
-func setupAppWithProgressBar(cmd *cobra.Command) (*app.App, error) {
+func setupAppWithProgressBar(cmd *cobra.Command) (*appPkg.App, error) {
 	app, err := setupApp(cmd)
 	if err != nil {
 		return nil, err
@@ -202,7 +216,7 @@ func setupAppWithProgressBar(cmd *cobra.Command) (*app.App, error) {
 
 // setupApp handles the common setup logic for both interactive and non-interactive modes.
 // It returns the app instance, config, cleanup function, and any error.
-func setupApp(cmd *cobra.Command) (*app.App, error) {
+func setupApp(cmd *cobra.Command) (*appPkg.App, error) {
 	debug, _ := cmd.Flags().GetBool("debug")
 	yolo, _ := cmd.Flags().GetBool("yolo")
 	dataDir, _ := cmd.Flags().GetString("data-dir")
@@ -240,7 +254,7 @@ func setupApp(cmd *cobra.Command) (*app.App, error) {
 		return nil, err
 	}
 
-	appInstance, err := app.New(ctx, conn, store)
+	appInstance, err := appPkg.New(ctx, conn, store)
 	if err != nil {
 		slog.Error("Failed to create app instance", "error", err)
 		return nil, err

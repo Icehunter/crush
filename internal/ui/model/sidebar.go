@@ -3,12 +3,14 @@ package model
 import (
 	"cmp"
 	"fmt"
+	"strings"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/logo"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/ultraviolet/layout"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // modelInfo renders the current model information including reasoning
@@ -123,6 +125,103 @@ func getDynamicHeightLimits(availableHeight int) (maxFiles, maxLSPs, maxMCPs int
 	return maxFiles, maxLSPs, maxMCPs
 }
 
+// autoModeInfo renders the auto-mode progress section for the sidebar. It
+// returns an empty string when autoSnapshot is nil (auto-mode inactive).
+func (m *UI) autoModeInfo(width int) string {
+	snap := m.autoSnapshot
+	if snap == nil {
+		return ""
+	}
+
+	t := m.com.Styles
+	var lines []string
+
+	// Header: status icon + "Auto Mode" + status text.
+	var statusIcon, statusText string
+	var statusStyle lipgloss.Style
+	switch snap.Status {
+	case "running":
+		statusIcon = "▶"
+		statusText = "Running"
+		statusStyle = lipgloss.NewStyle().Foreground(t.GreenDark)
+	case "paused":
+		statusIcon = "⏸"
+		statusText = "Paused"
+		statusStyle = t.Muted
+	case "completed":
+		statusIcon = "✓"
+		statusText = "Done"
+		statusStyle = lipgloss.NewStyle().Foreground(t.GreenDark)
+	case "error":
+		statusIcon = "✗"
+		statusText = "Error"
+		statusStyle = lipgloss.NewStyle().Foreground(t.Error)
+	default:
+		statusIcon = "○"
+		statusText = cmp.Or(snap.Status, "Unknown")
+		statusStyle = t.Muted
+	}
+
+	title := t.ResourceGroupTitle.Render("Auto Mode")
+	header := common.Section(t, title, width, statusStyle.Render(statusIcon+" "+statusText))
+	lines = append(lines, header)
+
+	// Milestone title.
+	if snap.MilestoneTitle != "" {
+		mt := ansi.Truncate(snap.MilestoneTitle, width, "…")
+		lines = append(lines, t.Muted.Render(mt))
+	}
+
+	// Slice tree.
+	for _, sl := range snap.Slices {
+		var icon string
+		switch sl.Status {
+		case "completed":
+			icon = "✓"
+		case "active":
+			icon = "▶"
+		case "blocked":
+			icon = "✗"
+		default:
+			icon = "○"
+		}
+		progress := fmt.Sprintf("%d/%d", sl.TasksDone, sl.TasksTotal)
+		// icon + space + title + space + progress = icon(1) + 1 + title + 1 + progress.
+		titleWidth := width - 2 - lipgloss.Width(progress) - 1
+		slTitle := sl.Title
+		if titleWidth > 0 && lipgloss.Width(slTitle) > titleWidth {
+			slTitle = ansi.Truncate(slTitle, titleWidth, "…")
+		}
+		line := fmt.Sprintf("%s %s %s", icon, slTitle, t.Muted.Render(progress))
+		lines = append(lines, line)
+	}
+
+	// Active unit.
+	if snap.ActiveUnit != "" {
+		au := ansi.Truncate("→ "+snap.ActiveUnit, width, "…")
+		lines = append(lines, au)
+	}
+
+	// Cost.
+	costLine := fmt.Sprintf("Cost: $%.2f", snap.TotalCost)
+	lines = append(lines, t.Muted.Render(costLine))
+
+	// Elapsed time.
+	elapsed := snap.ElapsedSeconds
+	var timeLine string
+	switch {
+	case elapsed < 60:
+		timeLine = fmt.Sprintf("Time: %.0fs", elapsed)
+	case elapsed < 3600:
+		timeLine = fmt.Sprintf("Time: %dm %ds", int(elapsed)/60, int(elapsed)%60)
+	default:
+		timeLine = fmt.Sprintf("Time: %dh %dm", int(elapsed)/3600, (int(elapsed)%3600)/60)
+	}
+	lines = append(lines, t.Muted.Render(timeLine))
+
+	return lipgloss.NewStyle().Width(width).Render(strings.Join(lines, "\n"))
+}
+
 // sidebar renders the chat sidebar containing session title, working
 // directory, model info, file list, LSP status, and MCP status.
 func (m *UI) drawSidebar(scr uv.Screen, area uv.Rectangle) {
@@ -156,6 +255,17 @@ func (m *UI) drawSidebar(scr uv.Screen, area uv.Rectangle) {
 		lipgloss.Left,
 		blocks...,
 	)
+
+	// Auto-mode progress section, inserted between model info and files.
+	autoSection := m.autoModeInfo(width)
+	if autoSection != "" {
+		sidebarHeader = lipgloss.JoinVertical(
+			lipgloss.Left,
+			sidebarHeader,
+			autoSection,
+			"",
+		)
+	}
 
 	_, remainingHeightArea := layout.SplitVertical(m.layout.sidebar, layout.Fixed(lipgloss.Height(sidebarHeader)))
 	remainingHeight := remainingHeightArea.Dy() - 10

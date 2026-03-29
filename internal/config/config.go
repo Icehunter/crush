@@ -264,6 +264,7 @@ type Options struct {
 	Progress                  *bool        `json:"progress,omitempty" jsonschema:"description=Show indeterminate progress updates during long operations,default=true"`
 	DisableNotifications      bool         `json:"disable_notifications,omitempty" jsonschema:"description=Disable desktop notifications,default=false"`
 	AutoModelTier             *bool        `json:"auto_model_tier,omitempty" jsonschema:"description=Automatically select model tier (background/main/planning) based on prompt heuristics,default=false"`
+	WorktreeMode              string       `json:"worktree_mode,omitempty" jsonschema:"description=Git worktree isolation mode for auto-mode milestones. Valid values: empty string (disabled) or per-milestone,enum=,enum=per-milestone"`
 }
 
 type MCPs map[string]MCPConfig
@@ -399,7 +400,18 @@ type Config struct {
 
 	Tools Tools `json:"tools,omitzero" jsonschema:"description=Tool configurations"`
 
+	Auto *AutoConfig `json:"auto,omitempty" jsonschema:"description=Auto-mode configuration"`
+
 	Agents map[string]Agent `json:"-"`
+}
+
+// AutoConfig holds configuration for auto-mode execution.
+type AutoConfig struct {
+	VerificationCommands []string `json:"verification_commands,omitempty" jsonschema:"description=Shell commands to run after each task execution for verification"`
+	BudgetCeiling        float64  `json:"budget_ceiling,omitempty" jsonschema:"description=Maximum dollar cost before auto-mode pauses"`
+	StuckThreshold       int      `json:"stuck_threshold,omitempty" jsonschema:"description=Number of consecutive failures before stuck detection triggers,default=5"`
+	WorktreeMode         string   `json:"worktree_mode,omitempty" jsonschema:"description=Git worktree isolation mode for auto-mode execution"`
+	MilestoneID          string   `json:"milestone_id,omitempty" jsonschema:"description=Active milestone ID for auto-mode execution"`
 }
 
 func (c *Config) EnabledProviders() []ProviderConfig {

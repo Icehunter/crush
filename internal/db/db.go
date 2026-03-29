@@ -11,10 +11,10 @@ import (
 )
 
 type DBTX interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
 	PrepareContext(context.Context, string) (*sql.Stmt, error)
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryContext(context.Context, string, ...interface{}) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...interface{}) *sql.Row
 }
 
 func New(db DBTX) *Queries {
@@ -30,14 +30,26 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.createMessageStmt, err = db.PrepareContext(ctx, createMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query CreateMessage: %w", err)
 	}
+	if q.createMilestoneStmt, err = db.PrepareContext(ctx, createMilestone); err != nil {
+		return nil, fmt.Errorf("error preparing query CreateMilestone: %w", err)
+	}
 	if q.createSessionStmt, err = db.PrepareContext(ctx, createSession); err != nil {
 		return nil, fmt.Errorf("error preparing query CreateSession: %w", err)
+	}
+	if q.createSliceStmt, err = db.PrepareContext(ctx, createSlice); err != nil {
+		return nil, fmt.Errorf("error preparing query CreateSlice: %w", err)
+	}
+	if q.createTaskStmt, err = db.PrepareContext(ctx, createTask); err != nil {
+		return nil, fmt.Errorf("error preparing query CreateTask: %w", err)
 	}
 	if q.deleteFileStmt, err = db.PrepareContext(ctx, deleteFile); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteFile: %w", err)
 	}
 	if q.deleteMessageStmt, err = db.PrepareContext(ctx, deleteMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteMessage: %w", err)
+	}
+	if q.deleteMilestoneStmt, err = db.PrepareContext(ctx, deleteMilestone); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteMilestone: %w", err)
 	}
 	if q.deleteSessionStmt, err = db.PrepareContext(ctx, deleteSession); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteSession: %w", err)
@@ -47,6 +59,12 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.deleteSessionMessagesStmt, err = db.PrepareContext(ctx, deleteSessionMessages); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteSessionMessages: %w", err)
+	}
+	if q.deleteSliceStmt, err = db.PrepareContext(ctx, deleteSlice); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteSlice: %w", err)
+	}
+	if q.deleteTaskStmt, err = db.PrepareContext(ctx, deleteTask); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteTask: %w", err)
 	}
 	if q.getAverageResponseTimeStmt, err = db.PrepareContext(ctx, getAverageResponseTime); err != nil {
 		return nil, fmt.Errorf("error preparing query GetAverageResponseTime: %w", err)
@@ -69,11 +87,23 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getMessageStmt, err = db.PrepareContext(ctx, getMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query GetMessage: %w", err)
 	}
+	if q.getMilestoneStmt, err = db.PrepareContext(ctx, getMilestone); err != nil {
+		return nil, fmt.Errorf("error preparing query GetMilestone: %w", err)
+	}
 	if q.getRecentActivityStmt, err = db.PrepareContext(ctx, getRecentActivity); err != nil {
 		return nil, fmt.Errorf("error preparing query GetRecentActivity: %w", err)
 	}
 	if q.getSessionByIDStmt, err = db.PrepareContext(ctx, getSessionByID); err != nil {
 		return nil, fmt.Errorf("error preparing query GetSessionByID: %w", err)
+	}
+	if q.getSessionTokenUsageStmt, err = db.PrepareContext(ctx, getSessionTokenUsage); err != nil {
+		return nil, fmt.Errorf("error preparing query GetSessionTokenUsage: %w", err)
+	}
+	if q.getSliceStmt, err = db.PrepareContext(ctx, getSlice); err != nil {
+		return nil, fmt.Errorf("error preparing query GetSlice: %w", err)
+	}
+	if q.getTaskStmt, err = db.PrepareContext(ctx, getTask); err != nil {
+		return nil, fmt.Errorf("error preparing query GetTask: %w", err)
 	}
 	if q.getToolUsageStmt, err = db.PrepareContext(ctx, getToolUsage); err != nil {
 		return nil, fmt.Errorf("error preparing query GetToolUsage: %w", err)
@@ -108,6 +138,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listMessagesBySessionStmt, err = db.PrepareContext(ctx, listMessagesBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListMessagesBySession: %w", err)
 	}
+	if q.listMilestonesStmt, err = db.PrepareContext(ctx, listMilestones); err != nil {
+		return nil, fmt.Errorf("error preparing query ListMilestones: %w", err)
+	}
 	if q.listNewFilesStmt, err = db.PrepareContext(ctx, listNewFiles); err != nil {
 		return nil, fmt.Errorf("error preparing query ListNewFiles: %w", err)
 	}
@@ -116,6 +149,15 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.listSessionsStmt, err = db.PrepareContext(ctx, listSessions); err != nil {
 		return nil, fmt.Errorf("error preparing query ListSessions: %w", err)
+	}
+	if q.listSlicesByMilestoneStmt, err = db.PrepareContext(ctx, listSlicesByMilestone); err != nil {
+		return nil, fmt.Errorf("error preparing query ListSlicesByMilestone: %w", err)
+	}
+	if q.listTasksByMilestoneStmt, err = db.PrepareContext(ctx, listTasksByMilestone); err != nil {
+		return nil, fmt.Errorf("error preparing query ListTasksByMilestone: %w", err)
+	}
+	if q.listTasksBySliceStmt, err = db.PrepareContext(ctx, listTasksBySlice); err != nil {
+		return nil, fmt.Errorf("error preparing query ListTasksBySlice: %w", err)
 	}
 	if q.listUserMessagesBySessionStmt, err = db.PrepareContext(ctx, listUserMessagesBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListUserMessagesBySession: %w", err)
@@ -126,14 +168,35 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.renameSessionStmt, err = db.PrepareContext(ctx, renameSession); err != nil {
 		return nil, fmt.Errorf("error preparing query RenameSession: %w", err)
 	}
+	if q.sumChildSessionCostsStmt, err = db.PrepareContext(ctx, sumChildSessionCosts); err != nil {
+		return nil, fmt.Errorf("error preparing query SumChildSessionCosts: %w", err)
+	}
 	if q.updateMessageStmt, err = db.PrepareContext(ctx, updateMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateMessage: %w", err)
+	}
+	if q.updateMilestonePhaseStmt, err = db.PrepareContext(ctx, updateMilestonePhase); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateMilestonePhase: %w", err)
+	}
+	if q.updateMilestoneStatusStmt, err = db.PrepareContext(ctx, updateMilestoneStatus); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateMilestoneStatus: %w", err)
 	}
 	if q.updateSessionStmt, err = db.PrepareContext(ctx, updateSession); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateSession: %w", err)
 	}
 	if q.updateSessionTitleAndUsageStmt, err = db.PrepareContext(ctx, updateSessionTitleAndUsage); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateSessionTitleAndUsage: %w", err)
+	}
+	if q.updateSlicePhaseStmt, err = db.PrepareContext(ctx, updateSlicePhase); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateSlicePhase: %w", err)
+	}
+	if q.updateSliceStatusStmt, err = db.PrepareContext(ctx, updateSliceStatus); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateSliceStatus: %w", err)
+	}
+	if q.updateTaskPhaseStmt, err = db.PrepareContext(ctx, updateTaskPhase); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateTaskPhase: %w", err)
+	}
+	if q.updateTaskStatusStmt, err = db.PrepareContext(ctx, updateTaskStatus); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateTaskStatus: %w", err)
 	}
 	return &q, nil
 }
@@ -150,9 +213,24 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing createMessageStmt: %w", cerr)
 		}
 	}
+	if q.createMilestoneStmt != nil {
+		if cerr := q.createMilestoneStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing createMilestoneStmt: %w", cerr)
+		}
+	}
 	if q.createSessionStmt != nil {
 		if cerr := q.createSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing createSessionStmt: %w", cerr)
+		}
+	}
+	if q.createSliceStmt != nil {
+		if cerr := q.createSliceStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing createSliceStmt: %w", cerr)
+		}
+	}
+	if q.createTaskStmt != nil {
+		if cerr := q.createTaskStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing createTaskStmt: %w", cerr)
 		}
 	}
 	if q.deleteFileStmt != nil {
@@ -163,6 +241,11 @@ func (q *Queries) Close() error {
 	if q.deleteMessageStmt != nil {
 		if cerr := q.deleteMessageStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing deleteMessageStmt: %w", cerr)
+		}
+	}
+	if q.deleteMilestoneStmt != nil {
+		if cerr := q.deleteMilestoneStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteMilestoneStmt: %w", cerr)
 		}
 	}
 	if q.deleteSessionStmt != nil {
@@ -178,6 +261,16 @@ func (q *Queries) Close() error {
 	if q.deleteSessionMessagesStmt != nil {
 		if cerr := q.deleteSessionMessagesStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing deleteSessionMessagesStmt: %w", cerr)
+		}
+	}
+	if q.deleteSliceStmt != nil {
+		if cerr := q.deleteSliceStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteSliceStmt: %w", cerr)
+		}
+	}
+	if q.deleteTaskStmt != nil {
+		if cerr := q.deleteTaskStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteTaskStmt: %w", cerr)
 		}
 	}
 	if q.getAverageResponseTimeStmt != nil {
@@ -215,6 +308,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getMessageStmt: %w", cerr)
 		}
 	}
+	if q.getMilestoneStmt != nil {
+		if cerr := q.getMilestoneStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getMilestoneStmt: %w", cerr)
+		}
+	}
 	if q.getRecentActivityStmt != nil {
 		if cerr := q.getRecentActivityStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getRecentActivityStmt: %w", cerr)
@@ -223,6 +321,21 @@ func (q *Queries) Close() error {
 	if q.getSessionByIDStmt != nil {
 		if cerr := q.getSessionByIDStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getSessionByIDStmt: %w", cerr)
+		}
+	}
+	if q.getSessionTokenUsageStmt != nil {
+		if cerr := q.getSessionTokenUsageStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getSessionTokenUsageStmt: %w", cerr)
+		}
+	}
+	if q.getSliceStmt != nil {
+		if cerr := q.getSliceStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getSliceStmt: %w", cerr)
+		}
+	}
+	if q.getTaskStmt != nil {
+		if cerr := q.getTaskStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getTaskStmt: %w", cerr)
 		}
 	}
 	if q.getToolUsageStmt != nil {
@@ -280,6 +393,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listMessagesBySessionStmt: %w", cerr)
 		}
 	}
+	if q.listMilestonesStmt != nil {
+		if cerr := q.listMilestonesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listMilestonesStmt: %w", cerr)
+		}
+	}
 	if q.listNewFilesStmt != nil {
 		if cerr := q.listNewFilesStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listNewFilesStmt: %w", cerr)
@@ -293,6 +411,21 @@ func (q *Queries) Close() error {
 	if q.listSessionsStmt != nil {
 		if cerr := q.listSessionsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listSessionsStmt: %w", cerr)
+		}
+	}
+	if q.listSlicesByMilestoneStmt != nil {
+		if cerr := q.listSlicesByMilestoneStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listSlicesByMilestoneStmt: %w", cerr)
+		}
+	}
+	if q.listTasksByMilestoneStmt != nil {
+		if cerr := q.listTasksByMilestoneStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listTasksByMilestoneStmt: %w", cerr)
+		}
+	}
+	if q.listTasksBySliceStmt != nil {
+		if cerr := q.listTasksBySliceStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listTasksBySliceStmt: %w", cerr)
 		}
 	}
 	if q.listUserMessagesBySessionStmt != nil {
@@ -310,9 +443,24 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing renameSessionStmt: %w", cerr)
 		}
 	}
+	if q.sumChildSessionCostsStmt != nil {
+		if cerr := q.sumChildSessionCostsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing sumChildSessionCostsStmt: %w", cerr)
+		}
+	}
 	if q.updateMessageStmt != nil {
 		if cerr := q.updateMessageStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing updateMessageStmt: %w", cerr)
+		}
+	}
+	if q.updateMilestonePhaseStmt != nil {
+		if cerr := q.updateMilestonePhaseStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateMilestonePhaseStmt: %w", cerr)
+		}
+	}
+	if q.updateMilestoneStatusStmt != nil {
+		if cerr := q.updateMilestoneStatusStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateMilestoneStatusStmt: %w", cerr)
 		}
 	}
 	if q.updateSessionStmt != nil {
@@ -323,6 +471,26 @@ func (q *Queries) Close() error {
 	if q.updateSessionTitleAndUsageStmt != nil {
 		if cerr := q.updateSessionTitleAndUsageStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing updateSessionTitleAndUsageStmt: %w", cerr)
+		}
+	}
+	if q.updateSlicePhaseStmt != nil {
+		if cerr := q.updateSlicePhaseStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateSlicePhaseStmt: %w", cerr)
+		}
+	}
+	if q.updateSliceStatusStmt != nil {
+		if cerr := q.updateSliceStatusStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateSliceStatusStmt: %w", cerr)
+		}
+	}
+	if q.updateTaskPhaseStmt != nil {
+		if cerr := q.updateTaskPhaseStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateTaskPhaseStmt: %w", cerr)
+		}
+	}
+	if q.updateTaskStatusStmt != nil {
+		if cerr := q.updateTaskStatusStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateTaskStatusStmt: %w", cerr)
 		}
 	}
 	return err
@@ -366,12 +534,18 @@ type Queries struct {
 	tx                             *sql.Tx
 	createFileStmt                 *sql.Stmt
 	createMessageStmt              *sql.Stmt
+	createMilestoneStmt            *sql.Stmt
 	createSessionStmt              *sql.Stmt
+	createSliceStmt                *sql.Stmt
+	createTaskStmt                 *sql.Stmt
 	deleteFileStmt                 *sql.Stmt
 	deleteMessageStmt              *sql.Stmt
+	deleteMilestoneStmt            *sql.Stmt
 	deleteSessionStmt              *sql.Stmt
 	deleteSessionFilesStmt         *sql.Stmt
 	deleteSessionMessagesStmt      *sql.Stmt
+	deleteSliceStmt                *sql.Stmt
+	deleteTaskStmt                 *sql.Stmt
 	getAverageResponseTimeStmt     *sql.Stmt
 	getFileStmt                    *sql.Stmt
 	getFileByPathAndSessionStmt    *sql.Stmt
@@ -379,8 +553,12 @@ type Queries struct {
 	getHourDayHeatmapStmt          *sql.Stmt
 	getLastSessionStmt             *sql.Stmt
 	getMessageStmt                 *sql.Stmt
+	getMilestoneStmt               *sql.Stmt
 	getRecentActivityStmt          *sql.Stmt
 	getSessionByIDStmt             *sql.Stmt
+	getSessionTokenUsageStmt       *sql.Stmt
+	getSliceStmt                   *sql.Stmt
+	getTaskStmt                    *sql.Stmt
 	getToolUsageStmt               *sql.Stmt
 	getTotalStatsStmt              *sql.Stmt
 	getUsageByDayStmt              *sql.Stmt
@@ -392,15 +570,26 @@ type Queries struct {
 	listFilesBySessionStmt         *sql.Stmt
 	listLatestSessionFilesStmt     *sql.Stmt
 	listMessagesBySessionStmt      *sql.Stmt
+	listMilestonesStmt             *sql.Stmt
 	listNewFilesStmt               *sql.Stmt
 	listSessionReadFilesStmt       *sql.Stmt
 	listSessionsStmt               *sql.Stmt
+	listSlicesByMilestoneStmt      *sql.Stmt
+	listTasksByMilestoneStmt       *sql.Stmt
+	listTasksBySliceStmt           *sql.Stmt
 	listUserMessagesBySessionStmt  *sql.Stmt
 	recordFileReadStmt             *sql.Stmt
 	renameSessionStmt              *sql.Stmt
+	sumChildSessionCostsStmt       *sql.Stmt
 	updateMessageStmt              *sql.Stmt
+	updateMilestonePhaseStmt       *sql.Stmt
+	updateMilestoneStatusStmt      *sql.Stmt
 	updateSessionStmt              *sql.Stmt
 	updateSessionTitleAndUsageStmt *sql.Stmt
+	updateSlicePhaseStmt           *sql.Stmt
+	updateSliceStatusStmt          *sql.Stmt
+	updateTaskPhaseStmt            *sql.Stmt
+	updateTaskStatusStmt           *sql.Stmt
 }
 
 func (q *Queries) WithTx(tx *sql.Tx) *Queries {
@@ -409,12 +598,18 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		tx:                             tx,
 		createFileStmt:                 q.createFileStmt,
 		createMessageStmt:              q.createMessageStmt,
+		createMilestoneStmt:            q.createMilestoneStmt,
 		createSessionStmt:              q.createSessionStmt,
+		createSliceStmt:                q.createSliceStmt,
+		createTaskStmt:                 q.createTaskStmt,
 		deleteFileStmt:                 q.deleteFileStmt,
 		deleteMessageStmt:              q.deleteMessageStmt,
+		deleteMilestoneStmt:            q.deleteMilestoneStmt,
 		deleteSessionStmt:              q.deleteSessionStmt,
 		deleteSessionFilesStmt:         q.deleteSessionFilesStmt,
 		deleteSessionMessagesStmt:      q.deleteSessionMessagesStmt,
+		deleteSliceStmt:                q.deleteSliceStmt,
+		deleteTaskStmt:                 q.deleteTaskStmt,
 		getAverageResponseTimeStmt:     q.getAverageResponseTimeStmt,
 		getFileStmt:                    q.getFileStmt,
 		getFileByPathAndSessionStmt:    q.getFileByPathAndSessionStmt,
@@ -422,8 +617,12 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getHourDayHeatmapStmt:          q.getHourDayHeatmapStmt,
 		getLastSessionStmt:             q.getLastSessionStmt,
 		getMessageStmt:                 q.getMessageStmt,
+		getMilestoneStmt:               q.getMilestoneStmt,
 		getRecentActivityStmt:          q.getRecentActivityStmt,
 		getSessionByIDStmt:             q.getSessionByIDStmt,
+		getSessionTokenUsageStmt:       q.getSessionTokenUsageStmt,
+		getSliceStmt:                   q.getSliceStmt,
+		getTaskStmt:                    q.getTaskStmt,
 		getToolUsageStmt:               q.getToolUsageStmt,
 		getTotalStatsStmt:              q.getTotalStatsStmt,
 		getUsageByDayStmt:              q.getUsageByDayStmt,
@@ -435,14 +634,25 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listFilesBySessionStmt:         q.listFilesBySessionStmt,
 		listLatestSessionFilesStmt:     q.listLatestSessionFilesStmt,
 		listMessagesBySessionStmt:      q.listMessagesBySessionStmt,
+		listMilestonesStmt:             q.listMilestonesStmt,
 		listNewFilesStmt:               q.listNewFilesStmt,
 		listSessionReadFilesStmt:       q.listSessionReadFilesStmt,
 		listSessionsStmt:               q.listSessionsStmt,
+		listSlicesByMilestoneStmt:      q.listSlicesByMilestoneStmt,
+		listTasksByMilestoneStmt:       q.listTasksByMilestoneStmt,
+		listTasksBySliceStmt:           q.listTasksBySliceStmt,
 		listUserMessagesBySessionStmt:  q.listUserMessagesBySessionStmt,
 		recordFileReadStmt:             q.recordFileReadStmt,
 		renameSessionStmt:              q.renameSessionStmt,
+		sumChildSessionCostsStmt:       q.sumChildSessionCostsStmt,
 		updateMessageStmt:              q.updateMessageStmt,
+		updateMilestonePhaseStmt:       q.updateMilestonePhaseStmt,
+		updateMilestoneStatusStmt:      q.updateMilestoneStatusStmt,
 		updateSessionStmt:              q.updateSessionStmt,
 		updateSessionTitleAndUsageStmt: q.updateSessionTitleAndUsageStmt,
+		updateSlicePhaseStmt:           q.updateSlicePhaseStmt,
+		updateSliceStatusStmt:          q.updateSliceStatusStmt,
+		updateTaskPhaseStmt:            q.updateTaskPhaseStmt,
+		updateTaskStatusStmt:           q.updateTaskStatusStmt,
 	}
 }

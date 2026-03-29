@@ -29,6 +29,7 @@ import (
 	agenttools "github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/app"
+	"github.com/charmbracelet/crush/internal/auto"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/fsext"
@@ -219,6 +220,11 @@ type UI struct {
 
 	// lsp
 	lspStates map[string]app.LSPClientInfo
+
+	// auto-mode
+	autoSnapshot    *auto.AutoSnapshot
+	autoController  AutoController
+	autoMilestoneID string
 
 	// mcp
 	mcpStates map[string]mcp.ClientInfo
@@ -622,6 +628,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.handleFileEvent(msg.Payload))
 	case pubsub.Event[app.LSPEvent]:
 		m.lspStates = app.GetLSPStates()
+	case pubsub.Event[auto.AutoEvent]:
+		m.autoSnapshot = msg.Payload.Snapshot
 	case pubsub.Event[mcp.Event]:
 		switch msg.Payload.Type {
 		case mcp.EventStateChanged:
@@ -1673,6 +1681,9 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				}
 				return true
 			}
+		case key.Matches(msg, m.keyMap.Auto.Toggle):
+			cmds = append(cmds, m.toggleAutoMode())
+			return true
 		case key.Matches(msg, m.keyMap.Suspend):
 			if m.isAgentBusy() {
 				cmds = append(cmds, util.ReportWarn("Agent is busy, please wait..."))
@@ -1772,6 +1783,11 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				value = strings.TrimSpace(value)
 				if value == "exit" || value == "quit" {
 					return m.openQuitDialog()
+				}
+
+				// Intercept /gsd commands before they reach the LLM.
+				if cmd, ok := m.handleGSDCommand(value); ok {
+					return cmd
 				}
 
 				attachments := m.attachments.List()
@@ -2197,6 +2213,7 @@ func (m *UI) ShortHelp() []key.Binding {
 			shiftTab,
 			commands,
 			k.Models,
+			k.Auto.Toggle,
 		)
 
 		switch m.focus {
@@ -2280,6 +2297,7 @@ func (m *UI) FullHelp() [][]key.Binding {
 			commands,
 			k.Models,
 			k.Sessions,
+			k.Auto.Toggle,
 		)
 		if hasSession {
 			mainBinds = append(mainBinds, k.Chat.NewSession)
@@ -3668,4 +3686,14 @@ func renderLogo(t *styles.Styles, compact bool, width int) string {
 		VersionColor: t.LogoVersionColor,
 		Width:        width,
 	})
+}
+
+// SetAutoController injects the auto-mode controller into the UI.
+func (m *UI) SetAutoController(c AutoController) {
+	m.autoController = c
+}
+
+// SetAutoMilestoneID sets the milestone ID for auto-mode.
+func (m *UI) SetAutoMilestoneID(id string) {
+	m.autoMilestoneID = id
 }

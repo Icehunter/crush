@@ -134,6 +134,25 @@ func (q *Queries) GetSessionByID(ctx context.Context, id string) (Session, error
 	return i, err
 }
 
+const getSessionTokenUsage = `-- name: GetSessionTokenUsage :one
+SELECT CAST(COALESCE(SUM(prompt_tokens), 0) AS INTEGER) AS total_prompt_tokens,
+       CAST(COALESCE(SUM(completion_tokens), 0) AS INTEGER) AS total_completion_tokens
+FROM sessions
+WHERE parent_session_id = ?
+`
+
+type GetSessionTokenUsageRow struct {
+	TotalPromptTokens     int64 `json:"total_prompt_tokens"`
+	TotalCompletionTokens int64 `json:"total_completion_tokens"`
+}
+
+func (q *Queries) GetSessionTokenUsage(ctx context.Context, parentSessionID sql.NullString) (GetSessionTokenUsageRow, error) {
+	row := q.queryRow(ctx, q.getSessionTokenUsageStmt, getSessionTokenUsage, parentSessionID)
+	var i GetSessionTokenUsageRow
+	err := row.Scan(&i.TotalPromptTokens, &i.TotalCompletionTokens)
+	return i, err
+}
+
 const listSessions = `-- name: ListSessions :many
 SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos
 FROM sessions
@@ -191,6 +210,19 @@ type RenameSessionParams struct {
 func (q *Queries) RenameSession(ctx context.Context, arg RenameSessionParams) error {
 	_, err := q.exec(ctx, q.renameSessionStmt, renameSession, arg.Title, arg.ID)
 	return err
+}
+
+const sumChildSessionCosts = `-- name: SumChildSessionCosts :one
+SELECT CAST(COALESCE(SUM(cost), 0) AS REAL) AS total_cost
+FROM sessions
+WHERE parent_session_id = ?
+`
+
+func (q *Queries) SumChildSessionCosts(ctx context.Context, parentSessionID sql.NullString) (float64, error) {
+	row := q.queryRow(ctx, q.sumChildSessionCostsStmt, sumChildSessionCosts, parentSessionID)
+	var total_cost float64
+	err := row.Scan(&total_cost)
+	return total_cost, err
 }
 
 const updateSession = `-- name: UpdateSession :one

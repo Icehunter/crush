@@ -6,17 +6,24 @@ package db
 
 import (
 	"context"
+	"database/sql"
 )
 
 type Querier interface {
 	CreateFile(ctx context.Context, arg CreateFileParams) (File, error)
 	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
+	CreateMilestone(ctx context.Context, arg CreateMilestoneParams) (Milestone, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
+	CreateSlice(ctx context.Context, arg CreateSliceParams) (Slice, error)
+	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
 	DeleteFile(ctx context.Context, id string) error
 	DeleteMessage(ctx context.Context, id string) error
+	DeleteMilestone(ctx context.Context, id string) error
 	DeleteSession(ctx context.Context, id string) error
 	DeleteSessionFiles(ctx context.Context, sessionID string) error
 	DeleteSessionMessages(ctx context.Context, sessionID string) error
+	DeleteSlice(ctx context.Context, id string) error
+	DeleteTask(ctx context.Context, id string) error
 	GetAverageResponseTime(ctx context.Context) (int64, error)
 	GetFile(ctx context.Context, id string) (File, error)
 	GetFileByPathAndSession(ctx context.Context, arg GetFileByPathAndSessionParams) (File, error)
@@ -24,8 +31,12 @@ type Querier interface {
 	GetHourDayHeatmap(ctx context.Context) ([]GetHourDayHeatmapRow, error)
 	GetLastSession(ctx context.Context) (Session, error)
 	GetMessage(ctx context.Context, id string) (Message, error)
+	GetMilestone(ctx context.Context, id string) (Milestone, error)
 	GetRecentActivity(ctx context.Context) ([]GetRecentActivityRow, error)
 	GetSessionByID(ctx context.Context, id string) (Session, error)
+	GetSessionTokenUsage(ctx context.Context, parentSessionID sql.NullString) (GetSessionTokenUsageRow, error)
+	GetSlice(ctx context.Context, id string) (Slice, error)
+	GetTask(ctx context.Context, id string) (Task, error)
 	GetToolUsage(ctx context.Context) ([]GetToolUsageRow, error)
 	GetTotalStats(ctx context.Context) (GetTotalStatsRow, error)
 	GetUsageByDay(ctx context.Context) ([]GetUsageByDayRow, error)
@@ -37,15 +48,26 @@ type Querier interface {
 	ListFilesBySession(ctx context.Context, sessionID string) ([]File, error)
 	ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error)
 	ListMessagesBySession(ctx context.Context, sessionID string) ([]Message, error)
+	ListMilestones(ctx context.Context) ([]Milestone, error)
 	ListNewFiles(ctx context.Context) ([]File, error)
 	ListSessionReadFiles(ctx context.Context, sessionID string) ([]ReadFile, error)
 	ListSessions(ctx context.Context) ([]Session, error)
+	ListSlicesByMilestone(ctx context.Context, milestoneID string) ([]Slice, error)
+	ListTasksByMilestone(ctx context.Context, milestoneID string) ([]Task, error)
+	ListTasksBySlice(ctx context.Context, sliceID string) ([]Task, error)
 	ListUserMessagesBySession(ctx context.Context, sessionID string) ([]Message, error)
 	RecordFileRead(ctx context.Context, arg RecordFileReadParams) error
 	RenameSession(ctx context.Context, arg RenameSessionParams) error
+	SumChildSessionCosts(ctx context.Context, parentSessionID sql.NullString) (float64, error)
 	UpdateMessage(ctx context.Context, arg UpdateMessageParams) error
+	UpdateMilestonePhase(ctx context.Context, arg UpdateMilestonePhaseParams) (Milestone, error)
+	UpdateMilestoneStatus(ctx context.Context, arg UpdateMilestoneStatusParams) (Milestone, error)
 	UpdateSession(ctx context.Context, arg UpdateSessionParams) (Session, error)
 	UpdateSessionTitleAndUsage(ctx context.Context, arg UpdateSessionTitleAndUsageParams) error
+	UpdateSlicePhase(ctx context.Context, arg UpdateSlicePhaseParams) (Slice, error)
+	UpdateSliceStatus(ctx context.Context, arg UpdateSliceStatusParams) (Slice, error)
+	UpdateTaskPhase(ctx context.Context, arg UpdateTaskPhaseParams) (Task, error)
+	UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusParams) (Task, error)
 }
 
 var _ Querier = (*Queries)(nil)
