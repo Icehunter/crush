@@ -430,3 +430,70 @@ func TestDepsMetFor(t *testing.T) {
 		}
 	}
 }
+
+func TestDeriveState_SkipsParkedMilestones(t *testing.T) {
+	t.Parallel()
+	q := newFakeQuerier()
+	q.milestones = []MilestoneRow{
+		{ID: "M001", Title: "Parked", Status: "parked", Phase: "pre_planning"},
+		{ID: "M002", Title: "Active", Status: "active", Phase: "pre_planning"},
+	}
+	q.slices["M002"] = []SliceRow{
+		{ID: "S01", Title: "Slice 1", Status: "active", Phase: "pre_planning", SortOrder: 1},
+	}
+	unit, err := DeriveState(context.Background(), q)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if unit.MilestoneID != "M002" {
+		t.Fatalf("expected M002, got %s", unit.MilestoneID)
+	}
+}
+
+func TestDeriveState_PhaseSkipResearch(t *testing.T) {
+	t.Parallel()
+	q := newFakeQuerier()
+	q.milestones = []MilestoneRow{
+		{ID: "M001", Title: "Active", Status: "active", Phase: "pre_planning"},
+	}
+	q.slices["M001"] = []SliceRow{
+		{ID: "S01", Title: "Slice 1", Status: "active", Phase: "pre_planning", SortOrder: 1},
+	}
+
+	// Without skip, should get UnitResearch.
+	unit, err := DeriveState(context.Background(), q)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if unit.Type != UnitResearch {
+		t.Fatalf("expected UnitResearch, got %s", unit.Type)
+	}
+
+	// With skip, should get UnitPlanSlice.
+	unit, err = DeriveStateWithSkips(context.Background(), q, PhaseSkipConfig{SkipResearch: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if unit.Type != UnitPlanSlice {
+		t.Fatalf("expected UnitPlanSlice, got %s", unit.Type)
+	}
+}
+
+func TestDeriveState_PhaseSkipSliceResearch(t *testing.T) {
+	t.Parallel()
+	q := newFakeQuerier()
+	q.milestones = []MilestoneRow{
+		{ID: "M001", Title: "Active", Status: "active", Phase: "pre_planning"},
+	}
+	q.slices["M001"] = []SliceRow{
+		{ID: "S01", Title: "Slice 1", Status: "active", Phase: "researching", SortOrder: 1},
+	}
+
+	unit, err := DeriveStateWithSkips(context.Background(), q, PhaseSkipConfig{SkipSliceResearch: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if unit.Type != UnitPlanSlice {
+		t.Fatalf("expected UnitPlanSlice, got %s", unit.Type)
+	}
+}

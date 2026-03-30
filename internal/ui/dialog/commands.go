@@ -523,6 +523,32 @@ func (c *Commands) defaultCommands() []*CommandItem {
 	}
 	commands = append(commands, NewCommandItem(c.com.Styles, "toggle_transparent", transparentLabel, "", ActionToggleTransparentBackground{}))
 
+	// GSD (Get Shit Done) commands.
+	commands = append(commands,
+		NewCommandItem(c.com.Styles, "gsd_next", "GSD: Next Unit", "ctrl+a", ActionGSDNext{}),
+		NewCommandItem(c.com.Styles, "gsd_auto", "GSD: Auto Mode", "", ActionGSDAutoStart{}),
+		NewCommandItem(c.com.Styles, "gsd_pause", "GSD: Pause", "", ActionGSDPause{}),
+		NewCommandItem(c.com.Styles, "gsd_stop", "GSD: Stop", "", ActionGSDStop{}),
+		NewCommandItem(c.com.Styles, "gsd_status", "GSD: Status", "", ActionGSDStatus{}),
+		NewCommandItem(c.com.Styles, "gsd_queue", "GSD: Queue", "", ActionGSDQueue{}),
+		NewCommandItem(c.com.Styles, "gsd_undo", "GSD: Undo Last", "", ActionGSDUndo{}),
+		NewCommandItem(c.com.Styles, "gsd_skip", "GSD: Skip Task", "", ActionGSDSkip{}),
+		NewCommandItem(c.com.Styles, "gsd_dispatch", "GSD: Dispatch Phase", "", ActionGSDDispatch{}),
+		NewCommandItem(c.com.Styles, "gsd_steer", "GSD: Steer", "", ActionGSDSteer{}),
+		NewCommandItem(c.com.Styles, "gsd_history", "GSD: History", "", ActionGSDHistory{}),
+		NewCommandItem(c.com.Styles, "gsd_rate", "GSD: Rate Tier", "", ActionGSDRate{}),
+		NewCommandItem(c.com.Styles, "gsd_doctor", "GSD: Doctor", "", ActionGSDDoctor{}),
+		NewCommandItem(c.com.Styles, "gsd_quick", "GSD: Quick Task", "", ActionGSDQuick{}),
+		NewCommandItem(c.com.Styles, "gsd_init", "GSD: Init Project", "", ActionGSDInit{}),
+		NewCommandItem(c.com.Styles, "gsd_start", "GSD: Start Template", "", ActionGSDStart{}),
+		NewCommandItem(c.com.Styles, "gsd_park", "GSD: Park Milestone", "", ActionGSDPark{}),
+		NewCommandItem(c.com.Styles, "gsd_unpark", "GSD: Unpark Milestone", "", ActionGSDUnpark{}),
+		NewCommandItem(c.com.Styles, "gsd_rethink", "GSD: Rethink", "", ActionGSDRethink{}),
+		NewCommandItem(c.com.Styles, "gsd_prefs", "GSD: Preferences", "", ActionGSDPrefs{}),
+		NewCommandItem(c.com.Styles, "gsd_cleanup", "GSD: Cleanup", "", ActionGSDCleanup{}),
+		NewCommandItem(c.com.Styles, "gsd_help", "GSD: Help", "", ActionGSDHelp{}),
+	)
+
 	commands = append(commands,
 		NewCommandItem(c.com.Styles, "quit", "Quit", "ctrl+c", tea.QuitMsg{}),
 	)

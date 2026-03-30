@@ -348,3 +348,111 @@ func TestParseBudget(t *testing.T) {
 		}
 	}
 }
+
+func TestApplyToAutoConfig_PhaseSkips(t *testing.T) {
+	t.Parallel()
+	skipTrue := true
+	prefs := &Preferences{
+		Phases: PhasesPreferences{
+			SkipResearch:      &skipTrue,
+			SkipSliceResearch: &skipTrue,
+		},
+	}
+	ac := &config.AutoConfig{}
+	prefs.ApplyToAutoConfig(ac)
+	require.True(t, ac.SkipResearch)
+	require.True(t, ac.SkipSliceResearch)
+}
+
+func TestApplyToAutoConfig_PhaseSkipsNotSet(t *testing.T) {
+	t.Parallel()
+	prefs := &Preferences{}
+	ac := &config.AutoConfig{}
+	prefs.ApplyToAutoConfig(ac)
+	require.False(t, ac.SkipResearch)
+	require.False(t, ac.SkipSliceResearch)
+}
+
+func TestApplyToAutoConfig_BudgetEnforcement(t *testing.T) {
+	t.Parallel()
+	prefs := &Preferences{
+		BudgetEnforcement: "halt",
+	}
+	ac := &config.AutoConfig{}
+	prefs.ApplyToAutoConfig(ac)
+	require.Equal(t, "halt", ac.BudgetEnforcement)
+}
+
+func TestFormatPreferences_Empty(t *testing.T) {
+	t.Parallel()
+	result := FormatPreferences(&Preferences{})
+	require.Contains(t, result, "all defaults")
+}
+
+func TestFormatPreferences_WithValues(t *testing.T) {
+	t.Parallel()
+	autoPush := true
+	prefs := &Preferences{
+		BudgetCeiling: "$5.00",
+		Git:           GitPreferences{AutoPush: &autoPush, Remote: "origin"},
+	}
+	result := FormatPreferences(prefs)
+	require.Contains(t, result, "budget_ceiling: $5.00")
+	require.Contains(t, result, "git.auto_push: true")
+	require.Contains(t, result, "git.remote: origin")
+}
+
+func TestFormatPreferences_Nil(t *testing.T) {
+	t.Parallel()
+	result := FormatPreferences(nil)
+	require.Contains(t, result, "No preferences")
+}
+
+func TestSetPreferenceValue_RoundTrip(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "PREFERENCES.md")
+
+	// Create initial file.
+	require.NoError(t, os.WriteFile(path, []byte("---\nversion: 1\n---\n"), 0o644))
+
+	// Set a value.
+	require.NoError(t, SetPreferenceValue(path, "budget_ceiling", "$10.00"))
+
+	// Read it back.
+	prefs, err := loadPreferencesFile(path)
+	require.NoError(t, err)
+	require.Equal(t, "$10.00", prefs.BudgetCeiling)
+}
+
+func TestSetPreferenceValue_BoolKey(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "PREFERENCES.md")
+	require.NoError(t, os.WriteFile(path, []byte("---\nversion: 1\n---\n"), 0o644))
+
+	require.NoError(t, SetPreferenceValue(path, "auto_push", "true"))
+
+	prefs, err := loadPreferencesFile(path)
+	require.NoError(t, err)
+	require.NotNil(t, prefs.Git.AutoPush)
+	require.True(t, *prefs.Git.AutoPush)
+}
+
+func TestSetPreferenceValue_UnknownKey(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "PREFERENCES.md")
+	require.NoError(t, os.WriteFile(path, []byte("---\nversion: 1\n---\n"), 0o644))
+
+	err := SetPreferenceValue(path, "nonexistent_key", "value")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unknown preference key")
+}
+
+func TestSetPreferenceValue_InvalidBool(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "PREFERENCES.md")
+	require.NoError(t, os.WriteFile(path, []byte("---\nversion: 1\n---\n"), 0o644))
+
+	err := SetPreferenceValue(path, "auto_push", "maybe")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid bool")
+}

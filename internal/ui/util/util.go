@@ -73,7 +73,18 @@ type (
 		TTL  time.Duration
 	}
 	ClearStatusMsg struct{}
+
+	// SystemNoticeMsg is a message that should be displayed persistently in
+	// the chat view rather than the ephemeral status bar.
+	SystemNoticeMsg struct {
+		Text string
+	}
 )
+
+// ReportNotice returns a tea.Cmd that displays text persistently in the chat view.
+func ReportNotice(text string) tea.Cmd {
+	return CmdHandler(SystemNoticeMsg{Text: text})
+}
 
 // IsEmpty checks if the [InfoMsg] is empty.
 func (m InfoMsg) IsEmpty() bool {

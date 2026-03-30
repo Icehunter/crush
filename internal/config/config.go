@@ -409,9 +409,12 @@ type Config struct {
 type AutoConfig struct {
 	VerificationCommands []string `json:"verification_commands,omitempty" jsonschema:"description=Shell commands to run after each task execution for verification"`
 	BudgetCeiling        float64  `json:"budget_ceiling,omitempty" jsonschema:"description=Maximum dollar cost before auto-mode pauses"`
+	BudgetEnforcement    string   `json:"budget_enforcement,omitempty" jsonschema:"description=Budget enforcement mode: warn (log and continue), pause (default), halt (non-recoverable)"`
 	StuckThreshold       int      `json:"stuck_threshold,omitempty" jsonschema:"description=Number of consecutive failures before stuck detection triggers,default=5"`
 	WorktreeMode         string   `json:"worktree_mode,omitempty" jsonschema:"description=Git worktree isolation mode for auto-mode execution"`
 	MilestoneID          string   `json:"milestone_id,omitempty" jsonschema:"description=Active milestone ID for auto-mode execution"`
+	SkipResearch         bool     `json:"skip_research,omitempty" jsonschema:"description=Skip research phase for slices"`
+	SkipSliceResearch    bool     `json:"skip_slice_research,omitempty" jsonschema:"description=Skip per-slice research phase"`
 }
 
 func (c *Config) EnabledProviders() []ProviderConfig {

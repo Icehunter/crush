@@ -138,6 +138,75 @@ func (w *WorktreeManager) Remove(ctx context.Context, milestoneID string) error 
 	return nil
 }
 
+// SnapshotCommit creates a snapshot commit on the milestone branch before
+// cleanup. This preserves the branch state even if merge squashes history.
+func (w *WorktreeManager) SnapshotCommit(ctx context.Context, milestoneID string) error {
+	wtPath := w.WorktreePath(milestoneID)
+	if _, err := os.Stat(wtPath); err != nil {
+		return nil // No worktree, nothing to snapshot.
+	}
+
+	// Stage and commit in the worktree directory.
+	cmd := exec.CommandContext(ctx, "git", "add", "-A")
+	cmd.Dir = wtPath
+	if err := cmd.Run(); err != nil {
+		return nil // Nothing to stage is fine.
+	}
+
+	commitCmd := exec.CommandContext(ctx, "git", "commit", "-m",
+		fmt.Sprintf("auto: snapshot %s before cleanup", milestoneID))
+	commitCmd.Dir = wtPath
+	if err := commitCmd.Run(); err != nil {
+		// "nothing to commit" is fine.
+		return nil
+	}
+
+	slog.Info("Snapshot commit created", "milestone", milestoneID)
+	return nil
+}
+
+// Push pushes the milestone branch to the specified remote. If remote is
+// empty, "origin" is used. Errors are returned but callers typically treat
+// push failures as non-fatal.
+func (w *WorktreeManager) Push(ctx context.Context, milestoneID, remote string) error {
+	if remote == "" {
+		remote = "origin"
+	}
+	branch := w.BranchName(milestoneID)
+	slog.Info("Pushing branch", "branch", branch, "remote", remote)
+
+	_, err := w.runGit(ctx, "push", remote, branch)
+	if err != nil {
+		return fmt.Errorf("push %s to %s: %w", branch, remote, err)
+	}
+
+	slog.Info("Branch pushed", "branch", branch, "remote", remote)
+	return nil
+}
+
+// Cleanup performs the full cleanup lifecycle: snapshot, merge, optionally
+// push, then remove the worktree.
+func (w *WorktreeManager) Cleanup(ctx context.Context, milestoneID string, autoPush bool, remote string) {
+	// Best-effort snapshot before merge.
+	if err := w.SnapshotCommit(ctx, milestoneID); err != nil {
+		slog.Error("Failed to snapshot", "milestone", milestoneID, "error", err)
+	}
+
+	if err := w.Merge(ctx, milestoneID); err != nil {
+		slog.Error("Failed to merge worktree", "milestone", milestoneID, "error", err)
+	}
+
+	if autoPush {
+		if err := w.Push(ctx, milestoneID, remote); err != nil {
+			slog.Error("Failed to push", "milestone", milestoneID, "error", err)
+		}
+	}
+
+	if err := w.Remove(ctx, milestoneID); err != nil {
+		slog.Error("Failed to remove worktree", "milestone", milestoneID, "error", err)
+	}
+}
+
 // runGit executes a git command from projectRoot and returns its
 // combined stdout. On failure the returned error includes stderr.
 func (w *WorktreeManager) runGit(ctx context.Context, args ...string) (string, error) {

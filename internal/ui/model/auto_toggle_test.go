@@ -16,18 +16,64 @@ import (
 
 // mockAutoController implements AutoController for testing.
 type mockAutoController struct {
-	startCalled  bool
-	pauseCalled  bool
-	resumeCalled bool
-	statusVal    string
-	startErr     error
-	pauseErr     error
-	resumeErr    error
+	startCalled      bool
+	stopCalled       bool
+	pauseCalled      bool
+	resumeCalled     bool
+	stepCalled       bool
+	undoCalled       bool
+	skipCalled       bool
+	dispatchCalled   bool
+	steerCalled      bool
+	historyCalled    bool
+	rateCalled       bool
+	doctorCalled     bool
+	quickCalled      bool
+	parkCalled       bool
+	unparkCalled     bool
+	rethinkCalled    bool
+	cleanupCalled    bool
+	initCalled       bool
+	statusVal        string
+	startErr         error
+	stopErr          error
+	pauseErr         error
+	resumeErr        error
+	stepErr          error
+	undoResult       string
+	undoErr          error
+	skipErr          error
+	dispatchErr      error
+	steerErr         error
+	historyResult    string
+	historyErr       error
+	rateErr          error
+	doctorResult     string
+	doctorErr        error
+	quickErr         error
+	queueResult      []string
+	queueErr         error
+	templateResult   string
+	templateErr      error
+	parkErr          error
+	unparkErr        error
+	rethinkErr       error
+	prefsResult      string
+	prefsErr         error
+	setPrefErr       error
+	cleanupResult    string
+	cleanupErr       error
+	initErr          error
 }
 
 func (m *mockAutoController) StartAuto(_ context.Context, _ string) error {
 	m.startCalled = true
 	return m.startErr
+}
+
+func (m *mockAutoController) StopAuto() error {
+	m.stopCalled = true
+	return m.stopErr
 }
 
 func (m *mockAutoController) PauseAuto() error {
@@ -40,8 +86,94 @@ func (m *mockAutoController) ResumeAuto(_ context.Context) error {
 	return m.resumeErr
 }
 
+func (m *mockAutoController) StepAuto(_ context.Context, _ string) error {
+	m.stepCalled = true
+	return m.stepErr
+}
+
 func (m *mockAutoController) AutoStatus() string {
 	return m.statusVal
+}
+
+func (m *mockAutoController) AutoQueue(_ context.Context, _ string) ([]string, error) {
+	return m.queueResult, m.queueErr
+}
+
+func (m *mockAutoController) UndoLast(_ context.Context, _ string) (string, error) {
+	m.undoCalled = true
+	return m.undoResult, m.undoErr
+}
+
+func (m *mockAutoController) SkipUnit(_ context.Context, _ string) error {
+	m.skipCalled = true
+	return m.skipErr
+}
+
+func (m *mockAutoController) DispatchPhase(_ context.Context, _, _ string) error {
+	m.dispatchCalled = true
+	return m.dispatchErr
+}
+
+func (m *mockAutoController) Steer(_ context.Context, _ string) error {
+	m.steerCalled = true
+	return m.steerErr
+}
+
+func (m *mockAutoController) History(_ context.Context, _ int) (string, error) {
+	m.historyCalled = true
+	return m.historyResult, m.historyErr
+}
+
+func (m *mockAutoController) RateTier(_ context.Context, _ string) error {
+	m.rateCalled = true
+	return m.rateErr
+}
+
+func (m *mockAutoController) RunDoctor(_ context.Context, _ bool) (string, error) {
+	m.doctorCalled = true
+	return m.doctorResult, m.doctorErr
+}
+
+func (m *mockAutoController) QuickTask(_ context.Context, _, _ string) error {
+	m.quickCalled = true
+	return m.quickErr
+}
+
+func (m *mockAutoController) StartFromTemplate(_ context.Context, _ string) (string, error) {
+	return m.templateResult, m.templateErr
+}
+
+func (m *mockAutoController) ParkMilestone(_ context.Context, _ string) error {
+	m.parkCalled = true
+	return m.parkErr
+}
+
+func (m *mockAutoController) UnparkMilestone(_ context.Context, _ string) error {
+	m.unparkCalled = true
+	return m.unparkErr
+}
+
+func (m *mockAutoController) Rethink(_ context.Context, _ string) error {
+	m.rethinkCalled = true
+	return m.rethinkErr
+}
+
+func (m *mockAutoController) GetPreferences() (string, error) {
+	return m.prefsResult, m.prefsErr
+}
+
+func (m *mockAutoController) SetPreference(_, _ string) error {
+	return m.setPrefErr
+}
+
+func (m *mockAutoController) CleanupWorktrees(_ context.Context) (string, error) {
+	m.cleanupCalled = true
+	return m.cleanupResult, m.cleanupErr
+}
+
+func (m *mockAutoController) InitProject(_ context.Context, _ string) error {
+	m.initCalled = true
+	return m.initErr
 }
 
 func newTestUIForToggle() *UI {

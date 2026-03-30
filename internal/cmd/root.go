@@ -119,6 +119,39 @@ crush --continue
 			if buildErr == nil {
 				querier := auto.NewDBStateQuerier(app.Queries)
 				ctrl := auto.NewEngineController(engine, querier)
+
+				// Wire status reverter for undo/skip.
+				advancer := auto.NewDBStatusAdvancer(app.Queries)
+				ctrl.SetReverter(advancer)
+
+				// Wire milestone parker.
+				ctrl.SetParker(auto.NewMilestoneParker(querier, advancer))
+
+				// Wire template applier.
+				ctrl.SetTemplateApplier(auto.NewDBTemplateApplier(app.Queries))
+
+				// Wire preferences paths.
+				cfg := app.Config()
+				dataDir := cfg.Options.DataDirectory
+				ctrl.SetPreferencesPaths(
+					filepath.Join(dataDir, "PREFERENCES.md"),
+					filepath.Join(".gsd", "PREFERENCES.md"),
+				)
+
+				// Wire init config builder.
+				ctrl.SetInitConfigFn(func(vision string) auto.InitConfig {
+					wd, _ := os.Getwd()
+					return auto.InitConfig{
+						Vision:     vision,
+						WorkingDir: wd,
+						Queries:    app.Queries,
+						Sessions:   app.Sessions,
+						Messages:   app.Messages,
+						Model:      app.AgentCoordinator.Model(),
+						Logger:     slog.Default(),
+					}
+				})
+
 				model.SetAutoController(ctrl)
 			}
 		}

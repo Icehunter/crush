@@ -857,6 +857,15 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, clearInfoMsgCmd(ttl))
 	case util.ClearStatusMsg:
 		m.status.ClearInfoMsg()
+	case util.SystemNoticeMsg:
+		noticeID := fmt.Sprintf("system-notice-%d", time.Now().UnixNano())
+		item := chat.NewSystemNoticeItem(m.com.Styles, noticeID, msg.Text)
+		m.chat.AppendMessages(item)
+		if m.chat.Follow() {
+			if cmd := m.chat.ScrollToBottomAndAnimate(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
 	case completions.CompletionItemsLoadedMsg:
 		if m.completionsOpen {
 			m.completions.SetItems(msg.Files, msg.Resources)
@@ -1423,6 +1432,92 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	case dialog.ActionDisableDockerMCP:
 		m.dialog.CloseDialog(dialog.CommandsID)
 		cmds = append(cmds, m.disableDockerMCP)
+	// GSD command palette actions — delegate to the existing slash command handlers.
+	case dialog.ActionGSDNext:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, m.gsdNext(""))
+	case dialog.ActionGSDAutoStart:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, m.gsdAuto("auto"))
+	case dialog.ActionGSDPause:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, m.gsdPause())
+	case dialog.ActionGSDStop:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, m.gsdStop())
+	case dialog.ActionGSDStatus:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, m.gsdStatus())
+	case dialog.ActionGSDQueue:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, m.gsdQueue())
+	case dialog.ActionGSDUndo:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, m.gsdUndo())
+	case dialog.ActionGSDHelp:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, gsdHelp())
+	case dialog.ActionGSDPark:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, m.gsdPark("park"))
+	case dialog.ActionGSDUnpark:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, m.gsdUnpark("unpark"))
+	case dialog.ActionGSDRethink:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, m.gsdRethink())
+	case dialog.ActionGSDPrefs:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, m.gsdPrefs("prefs"))
+	case dialog.ActionGSDCleanup:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, m.gsdCleanup())
+	case dialog.ActionGSDHistory:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, m.gsdHistory("history"))
+	case dialog.ActionGSDDoctor:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, m.gsdDoctor("doctor"))
+	case dialog.ActionGSDSkip:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		m.openGSDArgDialog("GSD: Skip Task", "skip $TASK_ID", commands.Argument{
+			ID: "TASK_ID", Title: "Task ID", Description: "ID of the task to skip", Required: true,
+		})
+	case dialog.ActionGSDSteer:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		m.openGSDArgDialog("GSD: Steer", "steer $GUIDANCE", commands.Argument{
+			ID: "GUIDANCE", Title: "Guidance", Description: "Guidance text to inject", Required: true,
+		})
+	case dialog.ActionGSDRate:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		m.openGSDArgDialog("GSD: Rate Tier", "rate $RATING", commands.Argument{
+			ID: "RATING", Title: "Rating", Description: "over, ok, or under", Required: true,
+		})
+	case dialog.ActionGSDInit:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		m.openGSDArgDialog("GSD: Init Project", "init $VISION", commands.Argument{
+			ID: "VISION", Title: "Vision", Description: "Project vision description", Required: true,
+		})
+	case dialog.ActionGSDDispatch:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		m.openGSDArgDialog("GSD: Dispatch Phase", "dispatch $PHASE", commands.Argument{
+			ID: "PHASE", Title: "Phase", Description: "research, plan, execute, summarize, or validate", Required: true,
+		})
+	case dialog.ActionGSDQuick:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		m.openGSDArgDialog("GSD: Quick Task", "quick $DESCRIPTION", commands.Argument{
+			ID: "DESCRIPTION", Title: "Task Description", Description: "What to do", Required: true,
+		})
+	case dialog.ActionGSDStart:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		m.openGSDArgDialog("GSD: Start Template", "start $TEMPLATE", commands.Argument{
+			ID: "TEMPLATE", Title: "Template", Description: "bugfix, feature, spike, hotfix, or refactor", Required: true,
+		})
+	case dialog.ActionGSDWithArg:
+		m.dialog.CloseFrontDialog()
+		cmd, _ := m.handleGSDCommand("/gsd " + msg.Command)
+		cmds = append(cmds, cmd)
+
 	case dialog.ActionInitializeProject:
 		if m.isAgentBusy() {
 			cmds = append(cmds, util.ReportWarn("Agent is busy, please wait before summarizing session..."))

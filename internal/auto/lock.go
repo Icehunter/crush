@@ -17,8 +17,11 @@ var ErrLockHeld = errors.New("auto lock is held by another process")
 
 // lockPayload is the JSON content stored inside the lock file.
 type lockPayload struct {
-	PID       int       `json:"pid"`
-	StartedAt time.Time `json:"started_at"`
+	PID         int       `json:"pid"`
+	StartedAt   time.Time `json:"started_at"`
+	UnitType    string    `json:"unit_type,omitempty"`
+	UnitID      string    `json:"unit_id,omitempty"`
+	MilestoneID string    `json:"milestone_id,omitempty"`
 }
 
 // LockFile manages a file-based lock that prevents concurrent auto-mode

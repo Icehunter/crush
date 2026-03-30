@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -90,6 +91,31 @@ type Engine struct {
 	// Nil-safe — when nil, no worktree isolation is used.
 	worktreeManager *WorktreeManager
 	worktreeMode    string
+
+	// autoPush controls whether completed milestones are pushed to remote.
+	autoPush bool
+	// pushRemote is the git remote to push to (default: "origin").
+	pushRemote string
+
+	// phaseSkips controls which phases are automatically skipped.
+	phaseSkips PhaseSkipConfig
+	// budgetEnforcement controls what happens when budget is exceeded:
+	// "warn" (log and continue), "pause" (default), "halt" (non-recoverable).
+	budgetEnforcement string
+
+	// retryState tracks exponential backoff across consecutive failures.
+	retryState *RetryState
+
+	// journal records unit dispatch outcomes to daily JSONL files.
+	// Nil-safe — when nil, no journaling occurs.
+	journal *Journal
+
+	// metrics records unit dispatch metrics for aggregation.
+	// Nil-safe — when nil, no metrics are recorded.
+	metrics *MetricsLedger
+
+	// runStart tracks when the current Run() began, for elapsed time.
+	runStart time.Time
 }
 
 // NewEngine creates an engine wired to the given dependencies.
@@ -126,6 +152,7 @@ func NewEngine(
 		logger:          logger,
 		state:           EngineIdle,
 		snapshotQuerier: snapshotQuerier,
+		retryState:      NewRetryState(),
 	}
 }
 
@@ -136,6 +163,30 @@ func NewEngine(
 func (e *Engine) SetWorktreeManager(wm *WorktreeManager, mode string) {
 	e.worktreeManager = wm
 	e.worktreeMode = mode
+}
+
+// SetJournalAndMetrics configures journal and metrics recording. Call
+// after NewEngine.
+func (e *Engine) SetJournalAndMetrics(journal *Journal, metrics *MetricsLedger) {
+	e.journal = journal
+	e.metrics = metrics
+}
+
+// SetPushConfig configures automatic git push on milestone completion.
+func (e *Engine) SetPushConfig(autoPush bool, remote string) {
+	e.autoPush = autoPush
+	e.pushRemote = remote
+}
+
+// SetPhaseSkips configures which phases are automatically skipped.
+func (e *Engine) SetPhaseSkips(skips PhaseSkipConfig) {
+	e.phaseSkips = skips
+}
+
+// SetBudgetEnforcement configures the budget enforcement mode.
+// Valid values: "warn", "pause" (default), "halt".
+func (e *Engine) SetBudgetEnforcement(mode string) {
+	e.budgetEnforcement = mode
 }
 
 // Run acquires the lock file and enters the loop until all work is done,
@@ -150,6 +201,19 @@ func (e *Engine) Run(ctx context.Context, milestoneID string) error {
 			e.logger.Error("Failed to release lock", "error", err)
 		}
 	}()
+
+	// Check for crash recovery before starting.
+	recoveryInfo, recoveryErr := RecoverFromCrash(ctx, lock.Path(), e.querier)
+	if recoveryErr != nil {
+		e.logger.Error("Crash recovery check failed", "error", recoveryErr)
+	} else if recoveryInfo.Action != RecoveryNone {
+		e.logger.Info("Crash recovery detected",
+			"action", recoveryInfo.Action,
+			"crashed_at", recoveryInfo.CrashedAt,
+			"unit_completed", recoveryInfo.UnitCompleted)
+		e.publish(EventCrashRecovery, recoveryInfo.CrashedUnit, nil,
+			fmt.Sprintf("Recovered from crash: %s (unit completed: %v)", recoveryInfo.Action, recoveryInfo.UnitCompleted))
+	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	e.mu.Lock()
@@ -171,6 +235,10 @@ func (e *Engine) Run(ctx context.Context, milestoneID string) error {
 		e.cancel = nil
 		e.mu.Unlock()
 	}()
+
+	// Reset retry state and start timer for a fresh run.
+	e.retryState.RecordSuccess()
+	e.runStart = time.Now()
 
 	// Create a parent session for this milestone run.
 	parentSessionID, err := e.sessions.CreateSession(ctx, fmt.Sprintf("auto: %s", milestoneID))
@@ -207,18 +275,43 @@ func (e *Engine) Run(ctx context.Context, milestoneID string) error {
 				e.cleanupWorktree(ctx, milestoneID)
 				return nil
 			}
-			// Non-fatal: log and continue to next iteration after a
-			// short backoff so we don't spin on persistent errors.
+
 			e.mu.Lock()
 			e.lastErr = err.Error()
 			e.mu.Unlock()
-			e.logger.Error("Unit dispatch failed, retrying", "error", err)
+
+			// Classify the error and determine retry strategy.
+			errClass := ClassifyError(err)
+			delay, retryable := e.retryState.RecordFailure(err)
+
+			e.publish(EventProviderError, Unit{}, err,
+				fmt.Sprintf("Error class: %s, retryable: %v, delay: %s, attempt: %d",
+					errClass, retryable, delay, e.retryState.Consecutives()))
+
+			if !retryable {
+				// Permanent error or retries exhausted — pause engine.
+				e.logger.Error("Non-retryable error, pausing engine",
+					"error", err, "class", errClass,
+					"consecutive_failures", e.retryState.Consecutives())
+				e.paused.Store(true)
+				e.mu.Lock()
+				e.state = EnginePaused
+				e.mu.Unlock()
+				return nil
+			}
+
+			e.logger.Error("Unit dispatch failed, retrying with backoff",
+				"error", err, "class", errClass,
+				"delay", delay, "attempt", e.retryState.Consecutives())
 
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(2 * time.Second):
+			case <-time.After(delay):
 			}
+		} else {
+			// Success — reset retry state.
+			e.retryState.RecordSuccess()
 		}
 	}
 }
@@ -252,7 +345,7 @@ func (e *Engine) Step(ctx context.Context, milestoneID string) error {
 // step derives the next unit, dispatches it, and advances status. Returns
 // errDone when no work remains.
 func (e *Engine) step(ctx context.Context, milestoneID, parentSessionID string) error {
-	unit, err := DeriveState(ctx, e.querier)
+	unit, err := DeriveStateWithSkips(ctx, e.querier, e.phaseSkips)
 	if err != nil {
 		return fmt.Errorf("derive state: %w", err)
 	}
@@ -267,13 +360,30 @@ func (e *Engine) step(ctx context.Context, milestoneID, parentSessionID string) 
 			return fmt.Errorf("check budget: %w", err)
 		}
 		if totalCost >= e.budgetCeiling {
-			e.logger.Info("Budget ceiling reached", "total_cost", totalCost, "ceiling", e.budgetCeiling)
-			e.publish(EventBudgetExceeded, unit, nil, fmt.Sprintf("total cost $%.4f >= ceiling $%.4f", totalCost, e.budgetCeiling))
-			e.mu.Lock()
-			e.state = EnginePaused
-			e.mu.Unlock()
-			e.paused.Store(true)
-			return nil
+			msg := fmt.Sprintf("total cost $%.4f >= ceiling $%.4f", totalCost, e.budgetCeiling)
+			e.publish(EventBudgetExceeded, unit, nil, msg)
+
+			switch e.budgetEnforcement {
+			case "warn":
+				// Log and continue — do not pause.
+				e.logger.Warn("Budget ceiling reached (warn mode)", "total_cost", totalCost, "ceiling", e.budgetCeiling)
+			case "halt":
+				// Non-recoverable stop.
+				e.logger.Error("Budget ceiling reached (halt mode)", "total_cost", totalCost, "ceiling", e.budgetCeiling)
+				e.mu.Lock()
+				e.state = EnginePaused
+				e.mu.Unlock()
+				e.paused.Store(true)
+				return fmt.Errorf("budget ceiling exceeded: %s", msg)
+			default:
+				// "pause" mode (default) — pause engine, user can resume.
+				e.logger.Info("Budget ceiling reached (pause mode)", "total_cost", totalCost, "ceiling", e.budgetCeiling)
+				e.mu.Lock()
+				e.state = EnginePaused
+				e.mu.Unlock()
+				e.paused.Store(true)
+				return nil
+			}
 		}
 	}
 
@@ -299,8 +409,23 @@ func (e *Engine) step(ctx context.Context, milestoneID, parentSessionID string) 
 	// Select model tier based on unit type.
 	tier := tierForUnit(unit.Type)
 
+	// Update lock file with active unit for crash recovery.
+	lockPath := filepath.Join(e.dataDir, lockFileName)
+	if updateErr := UpdateLockUnit(lockPath, unit); updateErr != nil {
+		e.logger.Warn("Failed to update lock with unit info", "error", updateErr)
+	}
+
 	e.publish(EventUnitStarted, unit, nil, "")
 	e.logger.Info("Dispatching unit", "unit", unit.String(), "session", sessionID, "tier", tier)
+
+	// Build prior summaries from journal if available.
+	var priorSummaries string
+	if e.journal != nil {
+		entries, readErr := ReadRecentEntries(e.journal.dir, 3)
+		if readErr == nil {
+			priorSummaries = BuildPriorSummaries(entries)
+		}
+	}
 
 	// Build the system prompt from templates.
 	promptCtx := PromptContext{
@@ -308,6 +433,7 @@ func (e *Engine) step(ctx context.Context, milestoneID, parentSessionID string) 
 		MilestoneTitle: unit.Title,
 		SliceID:        unit.SliceID,
 		TaskID:         unit.TaskID,
+		PriorSummaries: priorSummaries,
 		WorkingDir:     e.dataDir,
 	}
 	prompt, promptErr := BuildPrompt(unit.Type, promptCtx)
@@ -369,7 +495,10 @@ func (e *Engine) step(ctx context.Context, milestoneID, parentSessionID string) 
 		return nil
 	}
 
+	dispatchStart := time.Now()
+
 	if dispatchErr := e.dispatch.RunWithForcedTier(ctx, sessionID, prompt, tier); dispatchErr != nil {
+		dispatchDuration := time.Since(dispatchStart)
 		e.publish(EventUnitFailed, unit, dispatchErr, "Dispatch failed")
 		e.mu.Lock()
 		e.lastErr = dispatchErr.Error()
@@ -377,18 +506,23 @@ func (e *Engine) step(ctx context.Context, milestoneID, parentSessionID string) 
 		if e.stuckDetector != nil {
 			e.stuckDetector.Record(unitKey, false)
 		}
+		e.recordUnitOutcome(unit, false, dispatchDuration, dispatchErr, string(tier), sessionID)
 		return fmt.Errorf("dispatch unit %s: %w", unit.String(), dispatchErr)
 	}
 
 	// Run verification gate for task execution units only.
 	if unit.Type == UnitExecuteTask && e.verifier != nil {
 		if err := e.runVerificationGate(ctx, unit, sessionID, tier); err != nil {
+			dispatchDuration := time.Since(dispatchStart)
 			if e.stuckDetector != nil {
 				e.stuckDetector.Record(unitKey, false)
 			}
+			e.recordUnitOutcome(unit, false, dispatchDuration, err, string(tier), sessionID)
 			return err
 		}
 	}
+
+	dispatchDuration := time.Since(dispatchStart)
 
 	// Record success in stuck detector.
 	if e.stuckDetector != nil {
@@ -417,9 +551,45 @@ func (e *Engine) step(ctx context.Context, milestoneID, parentSessionID string) 
 		return fmt.Errorf("advance status for %s: %w", unit.String(), advErr)
 	}
 
+	e.recordUnitOutcome(unit, true, dispatchDuration, nil, string(tier), sessionID)
 	e.publish(EventUnitCompleted, unit, nil, "")
 	e.logger.Info("Unit completed", "unit", unit.String())
 	return nil
+}
+
+// recordUnitOutcome writes a journal entry and metrics record for a
+// completed (or failed) unit dispatch.
+func (e *Engine) recordUnitOutcome(unit Unit, success bool, duration time.Duration, dispatchErr error, modelTier, sessionID string) {
+	durationMs := duration.Milliseconds()
+
+	if e.journal != nil {
+		entry := JournalEntry{
+			MilestoneID: unit.MilestoneID,
+			SliceID:     unit.SliceID,
+			TaskID:      unit.TaskID,
+			UnitType:    string(unit.Type),
+			UnitTitle:   unit.Title,
+			Success:     success,
+			DurationMs:  durationMs,
+			ModelTier:   modelTier,
+			SessionID:   sessionID,
+		}
+		if dispatchErr != nil {
+			entry.ErrorMsg = dispatchErr.Error()
+			entry.ErrorClass = ClassifyError(dispatchErr).String()
+		}
+		e.journal.Record(entry)
+	}
+
+	if e.metrics != nil {
+		e.metrics.Record(UnitMetrics{
+			MilestoneID: unit.MilestoneID,
+			UnitType:    string(unit.Type),
+			Success:     success,
+			DurationMs:  durationMs,
+			ModelTier:   modelTier,
+		})
+	}
 }
 
 // Pause signals the engine to stop after the current unit finishes.
@@ -456,14 +626,24 @@ func (e *Engine) publish(eventType pubsub.EventType, unit Unit, err error, messa
 	if e.snapshotQuerier != nil {
 		status := string(e.state)
 		activeUnit := unit.String()
+
+		var totalCost float64
+		if e.metrics != nil {
+			totalCost = e.metrics.TotalCost(e.milestoneID)
+		}
+		var elapsed float64
+		if !e.runStart.IsZero() {
+			elapsed = time.Since(e.runStart).Seconds()
+		}
+
 		snap := BuildSnapshot(
 			context.Background(),
 			e.snapshotQuerier,
 			e.milestoneID,
 			status,
 			activeUnit,
-			0,
-			0,
+			totalCost,
+			elapsed,
 		)
 		event.Snapshot = snap
 	}
@@ -537,12 +717,7 @@ func (e *Engine) cleanupWorktree(ctx context.Context, milestoneID string) {
 	if e.worktreeManager == nil || e.worktreeMode != "per-milestone" {
 		return
 	}
-	if err := e.worktreeManager.Merge(ctx, milestoneID); err != nil {
-		e.logger.Error("Failed to merge worktree", "milestone", milestoneID, "error", err)
-	}
-	if err := e.worktreeManager.Remove(ctx, milestoneID); err != nil {
-		e.logger.Error("Failed to remove worktree", "milestone", milestoneID, "error", err)
-	}
+	e.worktreeManager.Cleanup(ctx, milestoneID, e.autoPush, e.pushRemote)
 }
 
 // allPassed returns true when every result passed or the list is empty.

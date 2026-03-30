@@ -261,6 +261,140 @@ func (p *Preferences) ApplyToAutoConfig(ac *config.AutoConfig) {
 	if p.Git.Isolation != "" {
 		ac.WorktreeMode = p.Git.Isolation
 	}
+
+	if p.BudgetEnforcement != "" {
+		ac.BudgetEnforcement = p.BudgetEnforcement
+	}
+
+	if p.Phases.SkipResearch != nil && *p.Phases.SkipResearch {
+		ac.SkipResearch = true
+	}
+	if p.Phases.SkipSliceResearch != nil && *p.Phases.SkipSliceResearch {
+		ac.SkipSliceResearch = true
+	}
+}
+
+// FormatPreferences returns a human-readable summary of the given preferences.
+func FormatPreferences(p *Preferences) string {
+	if p == nil {
+		return "No preferences loaded"
+	}
+	var lines []string
+	lines = append(lines, "GSD Preferences:")
+	if p.Mode != "" {
+		lines = append(lines, "  mode: "+p.Mode)
+	}
+	if p.BudgetCeiling != "" {
+		lines = append(lines, "  budget_ceiling: "+p.BudgetCeiling)
+	}
+	if p.BudgetEnforcement != "" {
+		lines = append(lines, "  budget_enforcement: "+p.BudgetEnforcement)
+	}
+	if p.Git.Isolation != "" {
+		lines = append(lines, "  git.isolation: "+p.Git.Isolation)
+	}
+	if p.Git.AutoPush != nil {
+		lines = append(lines, fmt.Sprintf("  git.auto_push: %v", *p.Git.AutoPush))
+	}
+	if p.Git.Remote != "" {
+		lines = append(lines, "  git.remote: "+p.Git.Remote)
+	}
+	if p.Phases.SkipResearch != nil {
+		lines = append(lines, fmt.Sprintf("  phases.skip_research: %v", *p.Phases.SkipResearch))
+	}
+	if p.Phases.SkipSliceResearch != nil {
+		lines = append(lines, fmt.Sprintf("  phases.skip_slice_research: %v", *p.Phases.SkipSliceResearch))
+	}
+	if len(p.VerificationCommands) > 0 {
+		lines = append(lines, "  verification_commands: "+strings.Join(p.VerificationCommands, ", "))
+	}
+	if len(lines) == 1 {
+		lines = append(lines, "  (all defaults)")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// SetPreferenceValue loads a PREFERENCES.md, sets a key=value, and writes it
+// back. Supports dotted keys like "git.auto_push".
+func SetPreferenceValue(path, key, value string) error {
+	prefs, err := loadPreferencesFile(path)
+	if err != nil {
+		return err
+	}
+
+	if err := applyPreferenceValue(prefs, key, value); err != nil {
+		return err
+	}
+
+	return writePreferencesFile(path, prefs)
+}
+
+// applyPreferenceValue sets a single field on a Preferences struct by key.
+func applyPreferenceValue(p *Preferences, key, value string) error {
+	boolVal := func(s string) (*bool, error) {
+		switch strings.ToLower(s) {
+		case "true", "1", "yes":
+			v := true
+			return &v, nil
+		case "false", "0", "no":
+			v := false
+			return &v, nil
+		default:
+			return nil, fmt.Errorf("invalid bool value: %q", s)
+		}
+	}
+
+	switch key {
+	case "mode":
+		p.Mode = value
+	case "budget_ceiling":
+		p.BudgetCeiling = value
+	case "budget_enforcement":
+		p.BudgetEnforcement = value
+	case "git.auto_push", "auto_push":
+		b, err := boolVal(value)
+		if err != nil {
+			return err
+		}
+		p.Git.AutoPush = b
+	case "git.remote", "remote":
+		p.Git.Remote = value
+	case "git.isolation", "isolation":
+		p.Git.Isolation = value
+	case "git.snapshots", "snapshots":
+		b, err := boolVal(value)
+		if err != nil {
+			return err
+		}
+		p.Git.Snapshots = b
+	case "phases.skip_research", "skip_research":
+		b, err := boolVal(value)
+		if err != nil {
+			return err
+		}
+		p.Phases.SkipResearch = b
+	case "phases.skip_slice_research", "skip_slice_research":
+		b, err := boolVal(value)
+		if err != nil {
+			return err
+		}
+		p.Phases.SkipSliceResearch = b
+	default:
+		return fmt.Errorf("unknown preference key: %q", key)
+	}
+	return nil
+}
+
+// writePreferencesFile writes a Preferences struct back to a PREFERENCES.md
+// file with YAML frontmatter.
+func writePreferencesFile(path string, p *Preferences) error {
+	data, err := yaml.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("marshal preferences: %w", err)
+	}
+
+	content := "---\n" + string(data) + "---\n"
+	return os.WriteFile(path, []byte(content), 0o644)
 }
 
 // parseBudget converts a budget string like "$5.00" or "5.00" to a float64.

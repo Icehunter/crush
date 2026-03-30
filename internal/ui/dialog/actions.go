@@ -85,6 +85,36 @@ type (
 	ActionEnableDockerMCP struct{}
 	// ActionDisableDockerMCP is a message to disable Docker MCP.
 	ActionDisableDockerMCP struct{}
+
+	// GSD (Get Shit Done) command palette actions.
+	ActionGSDNext      struct{}
+	ActionGSDAutoStart struct{}
+	ActionGSDPause     struct{}
+	ActionGSDStop      struct{}
+	ActionGSDStatus    struct{}
+	ActionGSDQueue     struct{}
+	ActionGSDUndo      struct{}
+	ActionGSDHelp      struct{}
+	ActionGSDPark      struct{}
+	ActionGSDUnpark    struct{}
+	ActionGSDRethink   struct{}
+	ActionGSDPrefs     struct{}
+	ActionGSDCleanup   struct{}
+	ActionGSDHistory   struct{}
+	ActionGSDDoctor    struct{}
+	ActionGSDSkip      struct{}
+	ActionGSDSteer     struct{}
+	ActionGSDRate      struct{}
+	ActionGSDInit      struct{}
+	ActionGSDDispatch  struct{}
+	ActionGSDQuick     struct{}
+	ActionGSDStart     struct{}
+
+	// ActionGSDWithArg is a GSD action that carries a collected argument.
+	// Used by the Arguments dialog to pass user input back to a GSD handler.
+	ActionGSDWithArg struct {
+		Command string // The /gsd sub-command string (e.g., "init my vision")
+	}
 )
 
 // Messages for API key input dialog.

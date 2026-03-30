@@ -174,6 +174,74 @@ func (d *DBStatusAdvancer) AdvanceStatus(ctx context.Context, unit Unit) error {
 	}
 }
 
+// SetMilestoneStatus directly sets a milestone's status to the given value.
+// Used by park/unpark operations.
+func (d *DBStatusAdvancer) SetMilestoneStatus(ctx context.Context, milestoneID, status string) error {
+	_, err := d.q.UpdateMilestoneStatus(ctx, db.UpdateMilestoneStatusParams{
+		Status: status,
+		ID:     milestoneID,
+	})
+	return err
+}
+
+// RevertStatus undoes AdvanceStatus, reverting a unit to its pre-completion
+// state. This is the inverse of AdvanceStatus:
+//
+//   - UnitExecuteTask   → task status = active, task phase = executing
+//   - UnitSummarizeSlice → slice status = active, slice phase = executing
+//   - UnitValidateMilestone → milestone status = active, milestone phase = executing
+func (d *DBStatusAdvancer) RevertStatus(ctx context.Context, unit Unit) error {
+	switch unit.Type {
+	case UnitExecuteTask:
+		if _, err := d.q.UpdateTaskStatus(ctx, db.UpdateTaskStatusParams{
+			Status: string(StatusActive),
+			ID:     unit.TaskID,
+		}); err != nil {
+			return fmt.Errorf("revert task status: %w", err)
+		}
+		if _, err := d.q.UpdateTaskPhase(ctx, db.UpdateTaskPhaseParams{
+			Phase: string(PhaseExecuting),
+			ID:    unit.TaskID,
+		}); err != nil {
+			return fmt.Errorf("revert task phase: %w", err)
+		}
+		return nil
+
+	case UnitSummarizeSlice:
+		if _, err := d.q.UpdateSliceStatus(ctx, db.UpdateSliceStatusParams{
+			Status: string(StatusActive),
+			ID:     unit.SliceID,
+		}); err != nil {
+			return fmt.Errorf("revert slice status: %w", err)
+		}
+		if _, err := d.q.UpdateSlicePhase(ctx, db.UpdateSlicePhaseParams{
+			Phase: string(PhaseExecuting),
+			ID:    unit.SliceID,
+		}); err != nil {
+			return fmt.Errorf("revert slice phase: %w", err)
+		}
+		return nil
+
+	case UnitValidateMilestone:
+		if _, err := d.q.UpdateMilestoneStatus(ctx, db.UpdateMilestoneStatusParams{
+			Status: string(StatusActive),
+			ID:     unit.MilestoneID,
+		}); err != nil {
+			return fmt.Errorf("revert milestone status: %w", err)
+		}
+		if _, err := d.q.UpdateMilestonePhase(ctx, db.UpdateMilestonePhaseParams{
+			Phase: string(PhaseExecuting),
+			ID:    unit.MilestoneID,
+		}); err != nil {
+			return fmt.Errorf("revert milestone phase: %w", err)
+		}
+		return nil
+
+	default:
+		return fmt.Errorf("cannot revert unit type %q", unit.Type)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // SessionServiceCreator implements SessionCreator backed by session.Service.
 // ---------------------------------------------------------------------------

@@ -21,6 +21,9 @@ const (
 	EventBudgetExceeded      pubsub.EventType = "budget_exceeded"
 	EventStuckDetected       pubsub.EventType = "stuck_detected"
 	EventContextPressure     pubsub.EventType = "context_pressure"
+	EventProviderError       pubsub.EventType = "provider_error"
+	EventCrashRecovery       pubsub.EventType = "crash_recovery"
+	EventAutoResume          pubsub.EventType = "auto_resume"
 )
 
 // AutoEvent is the payload published through the auto loop's event broker.

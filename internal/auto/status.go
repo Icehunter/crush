@@ -12,12 +12,14 @@ const (
 	StatusCompleted Status = "completed"
 	// StatusBlocked indicates the item cannot proceed.
 	StatusBlocked Status = "blocked"
+	// StatusParked indicates the item is intentionally set aside.
+	StatusParked Status = "parked"
 )
 
 // IsValid returns true when the status is one of the known constants.
 func (s Status) IsValid() bool {
 	switch s {
-	case StatusPending, StatusActive, StatusCompleted, StatusBlocked:
+	case StatusPending, StatusActive, StatusCompleted, StatusBlocked, StatusParked:
 		return true
 	}
 	return false

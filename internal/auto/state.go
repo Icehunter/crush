@@ -42,18 +42,33 @@ type StateQuerier interface {
 	ListTasksBySlice(ctx context.Context, sliceID string) ([]TaskRow, error)
 }
 
+// PhaseSkipConfig controls which phases are automatically skipped
+// during state derivation.
+type PhaseSkipConfig struct {
+	SkipResearch      bool
+	SkipSliceResearch bool
+}
+
 // DeriveState examines the current DB state and returns the next Unit the
 // engine should dispatch. It returns a zero-value Unit when all work is
 // complete or when remaining work is blocked on unmet dependencies.
 func DeriveState(ctx context.Context, q StateQuerier) (Unit, error) {
+	return DeriveStateWithSkips(ctx, q, PhaseSkipConfig{})
+}
+
+// DeriveStateWithSkips is like DeriveState but respects phase-skip preferences.
+func DeriveStateWithSkips(ctx context.Context, q StateQuerier, skips PhaseSkipConfig) (Unit, error) {
 	milestones, err := q.ListMilestones(ctx)
 	if err != nil {
 		return Unit{}, fmt.Errorf("list milestones: %w", err)
 	}
 
-	// Find the first active milestone.
+	// Find the first active milestone, skipping parked ones.
 	var active *MilestoneRow
 	for i := range milestones {
+		if Status(milestones[i].Status) == StatusParked {
+			continue
+		}
 		if Status(milestones[i].Status) == StatusActive {
 			active = &milestones[i]
 			break
@@ -87,7 +102,7 @@ func DeriveState(ctx context.Context, q StateQuerier) (Unit, error) {
 			continue // Blocked — skip to the next slice.
 		}
 
-		unit, err := unitForSlice(ctx, q, active, &s)
+		unit, err := unitForSlice(ctx, q, active, &s, skips)
 		if err != nil {
 			return Unit{}, err
 		}
@@ -115,12 +130,22 @@ func DeriveState(ctx context.Context, q StateQuerier) (Unit, error) {
 }
 
 // unitForSlice returns the next unit for a non-completed slice whose
-// dependencies are met.
-func unitForSlice(ctx context.Context, q StateQuerier, m *MilestoneRow, s *SliceRow) (Unit, error) {
+// dependencies are met. The skips config controls which phases are
+// automatically skipped.
+func unitForSlice(ctx context.Context, q StateQuerier, m *MilestoneRow, s *SliceRow, skips PhaseSkipConfig) (Unit, error) {
 	phase := Phase(s.Phase)
 
 	switch phase {
 	case PhasePrePlanning, PhaseResearching:
+		// If research is skipped, jump directly to planning.
+		if skips.SkipResearch || skips.SkipSliceResearch {
+			return Unit{
+				Type:        UnitPlanSlice,
+				MilestoneID: m.ID,
+				SliceID:     s.ID,
+				Title:       fmt.Sprintf("Plan slice %s (research skipped)", s.Title),
+			}, nil
+		}
 		return Unit{
 			Type:        UnitResearch,
 			MilestoneID: m.ID,

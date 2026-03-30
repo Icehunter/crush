@@ -50,7 +50,14 @@
       "Bash(code --list-extensions)",
       "Bash(find:*)",
       "Bash(code --list-extensions --show-versions)",
-      "Bash(ls ~/.claude/auth* ~/.claude/oauth* ~/.claude/token*)"
+      "Bash(ls ~/.claude/auth* ~/.claude/oauth* ~/.claude/token*)",
+      "Bash(ls /Volumes/Engineering/Icehunter/crush/internal/auto/*_test.go)",
+      "Bash(wc -l /Volumes/Engineering/Icehunter/crush/internal/auto/*_test.go /Volumes/Engineering/Icehunter/crush/internal/auto/*_integration_test.go)",
+      "Bash(ls:*)",
+      "Bash(grep -l \"crash\\\\|panic\\\\|recover\\\\|lock\\\\|stale\" /Volumes/Engineering/Icehunter/crush/internal/auto/*_test.go)",
+      "Bash(grep -n \"StateQuerier\\\\|BuildSnapshot\\\\|PriorSummaries\" /Volumes/Engineering/Icehunter/crush/internal/auto/*.go)",
+      "Bash(find /Volumes/Engineering/Icehunter/crush -name *.sql -path */migrations*)",
+      "Bash(find /Volumes/Engineering/Icehunter/gsd-2/src -type f -name *.ts)"
     ]
   }
 }

@@ -218,6 +218,14 @@ func (a *Arguments) HandleMsg(msg tea.Msg) Action {
 				case ActionRunMCPPrompt:
 					action.Args = args
 					return action
+				case ActionGSDWithArg:
+					// Substitute $ARG placeholders in the command.
+					cmd := action.Command
+					for k, v := range args {
+						cmd = strings.ReplaceAll(cmd, "$"+k, v)
+					}
+					action.Command = cmd
+					return action
 				}
 			}
 			a.focusInput(a.focused + 1)

@@ -86,13 +86,14 @@ func RunInit(ctx context.Context, cfg InitConfig) error {
 	defer notifyBroker.Shutdown()
 
 	sa := agent.NewSessionAgent(agent.SessionAgentOptions{
-		MainModel:    cfg.Model,
-		SystemPrompt: systemPrompt,
-		Tools:        tools,
-		Sessions:     cfg.Sessions,
-		Messages:     cfg.Messages,
-		Notify:       notifyBroker,
-		IsSubAgent:   true,
+		MainModel:       cfg.Model,
+		BackgroundModel: cfg.Model,
+		SystemPrompt:    systemPrompt,
+		Tools:           tools,
+		Sessions:        cfg.Sessions,
+		Messages:        cfg.Messages,
+		Notify:          notifyBroker,
+		IsSubAgent:      true,
 	})
 
 	// Dispatch the vision as a non-interactive prompt.
