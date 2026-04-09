@@ -27,6 +27,7 @@ import (
 	"github.com/charmbracelet/crush/internal/log"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
+	"github.com/charmbracelet/crush/internal/oauth/claudecode"
 	"github.com/charmbracelet/crush/internal/oauth/copilot"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
@@ -47,20 +48,23 @@ import (
 
 // Coordinator errors.
 var (
-	errCoderAgentNotConfigured         = errors.New("coder agent not configured")
-	errModelProviderNotConfigured      = errors.New("model provider not configured")
-	errLargeModelNotSelected           = errors.New("large model not selected")
-	errSmallModelNotSelected           = errors.New("small model not selected")
-	errLargeModelProviderNotConfigured = errors.New("large model provider not configured")
-	errSmallModelProviderNotConfigured = errors.New("small model provider not configured")
-	errLargeModelNotFound              = errors.New("large model not found in provider config")
-	errSmallModelNotFound              = errors.New("small model not found in provider config")
+	errCoderAgentNotConfigured           = errors.New("coder agent not configured")
+	errModelProviderNotConfigured        = errors.New("model provider not configured")
+	errMainModelNotSelected              = errors.New("main model not selected")
+	errBackgroundModelNotSelected        = errors.New("background model not selected")
+	errMainModelProviderNotConfigured    = errors.New("main model provider not configured")
+	errBackgroundModelProviderNotConfigured = errors.New("background model provider not configured")
+	errMainModelNotFound                 = errors.New("main model not found in provider config")
+	errBackgroundModelNotFound           = errors.New("background model not found in provider config")
 )
 
 type Coordinator interface {
 	// INFO: (kujtim) this is not used yet we will use this when we have multiple agents
 	// SetMainAgent(string)
 	Run(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error)
+	// RunWithForcedTier runs like Run but forces a specific model tier, bypassing auto-tier selection.
+	// Pass an empty string to use normal auto-tier behaviour.
+	RunWithForcedTier(ctx context.Context, sessionID, prompt string, tier config.SelectedModelType, attachments ...message.Attachment) (*fantasy.AgentResult, error)
 	Cancel(sessionID string)
 	CancelAll()
 	IsSessionBusy(sessionID string) bool
@@ -83,8 +87,11 @@ type coordinator struct {
 	lspManager  *lsp.Manager
 	notify      pubsub.Publisher[notify.Notification]
 
-	currentAgent SessionAgent
-	agents       map[string]SessionAgent
+	currentAgent    SessionAgent
+	agents          map[string]SessionAgent
+	mainModel       Model
+	backgroundModel Model
+	planningModel   Model
 
 	readyWg errgroup.Group
 }
@@ -134,6 +141,11 @@ func NewCoordinator(
 
 // Run implements Coordinator.
 func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	return c.RunWithForcedTier(ctx, sessionID, prompt, "", attachments...)
+}
+
+// RunWithForcedTier implements Coordinator.
+func (c *coordinator) RunWithForcedTier(ctx context.Context, sessionID string, prompt string, forcedTier config.SelectedModelType, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
@@ -143,7 +155,18 @@ func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, 
 		return nil, fmt.Errorf("failed to update models: %w", err)
 	}
 
-	model := c.currentAgent.Model()
+	tier := c.selectModelTier(prompt, forcedTier)
+	var model Model
+	switch tier {
+	case config.SelectedModelTypeBackground:
+		model = c.backgroundModel
+	case config.SelectedModelTypePlanning:
+		model = c.planningModel
+	default:
+		model = c.mainModel
+	}
+	slog.Debug("Auto-selected model tier", "tier", tier, "model", model.ModelCfg.Model)
+
 	maxTokens := model.CatwalkCfg.DefaultMaxTokens
 	if model.ModelCfg.MaxTokens != 0 {
 		maxTokens = model.ModelCfg.MaxTokens
@@ -186,6 +209,7 @@ func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, 
 			TopK:             topK,
 			FrequencyPenalty: freqPenalty,
 			PresencePenalty:  presPenalty,
+			ModelTier:        tier,
 		})
 	}
 	result, originalErr := run()
@@ -378,16 +402,17 @@ func mergeCallOptions(model Model, cfg config.ProviderConfig) (fantasy.ProviderO
 }
 
 func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, agent config.Agent, isSubAgent bool) (SessionAgent, error) {
-	large, small, err := c.buildAgentModels(ctx, isSubAgent)
+	main, background, planning, err := c.buildAgentModels(ctx, isSubAgent)
 	if err != nil {
 		return nil, err
 	}
 
-	largeProviderCfg, _ := c.cfg.Config().Providers.Get(large.ModelCfg.Provider)
+	mainProviderCfg, _ := c.cfg.Config().Providers.Get(main.ModelCfg.Provider)
 	result := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           large,
-		SmallModel:           small,
-		SystemPromptPrefix:   largeProviderCfg.SystemPromptPrefix,
+		MainModel:            main,
+		BackgroundModel:      background,
+		PlanningModel:        planning,
+		SystemPromptPrefix:   mainProviderCfg.SystemPromptPrefix,
 		SystemPrompt:         "",
 		IsSubAgent:           isSubAgent,
 		DisableAutoSummarize: c.cfg.Config().Options.DisableAutoSummarize,
@@ -399,7 +424,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 	})
 
 	c.readyWg.Go(func() error {
-		systemPrompt, err := prompt.Build(ctx, large.Model.Provider(), large.Model.Model(), c.cfg)
+		systemPrompt, err := prompt.Build(ctx, main.Model.Provider(), main.Model.Model(), c.cfg)
 		if err != nil {
 			return err
 		}
@@ -512,97 +537,273 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent) ([]fan
 }
 
 // TODO: when we support multiple agents we need to change this so that we pass in the agent specific model config
-func (c *coordinator) buildAgentModels(ctx context.Context, isSubAgent bool) (Model, Model, error) {
-	largeModelCfg, ok := c.cfg.Config().Models[config.SelectedModelTypeLarge]
+func (c *coordinator) buildAgentModels(ctx context.Context, isSubAgent bool) (main Model, background Model, planning Model, err error) {
+	mainModelCfg, ok := c.cfg.Config().Models[config.SelectedModelTypeMain]
 	if !ok {
-		return Model{}, Model{}, errLargeModelNotSelected
+		return Model{}, Model{}, Model{}, errMainModelNotSelected
 	}
-	smallModelCfg, ok := c.cfg.Config().Models[config.SelectedModelTypeSmall]
+	backgroundModelCfg, ok := c.cfg.Config().Models[config.SelectedModelTypeBackground]
 	if !ok {
-		return Model{}, Model{}, errSmallModelNotSelected
-	}
-
-	largeProviderCfg, ok := c.cfg.Config().Providers.Get(largeModelCfg.Provider)
-	if !ok {
-		return Model{}, Model{}, errLargeModelProviderNotConfigured
+		return Model{}, Model{}, Model{}, errBackgroundModelNotSelected
 	}
 
-	largeProvider, err := c.buildProvider(largeProviderCfg, largeModelCfg, isSubAgent)
+	mainProviderCfg, ok := c.cfg.Config().Providers.Get(mainModelCfg.Provider)
+	if !ok {
+		return Model{}, Model{}, Model{}, errMainModelProviderNotConfigured
+	}
+
+	mainProvider, err := c.buildProvider(mainProviderCfg, mainModelCfg, isSubAgent)
 	if err != nil {
-		return Model{}, Model{}, err
+		return Model{}, Model{}, Model{}, err
 	}
 
-	smallProviderCfg, ok := c.cfg.Config().Providers.Get(smallModelCfg.Provider)
+	backgroundProviderCfg, ok := c.cfg.Config().Providers.Get(backgroundModelCfg.Provider)
 	if !ok {
-		return Model{}, Model{}, errSmallModelProviderNotConfigured
+		return Model{}, Model{}, Model{}, errBackgroundModelProviderNotConfigured
 	}
 
-	smallProvider, err := c.buildProvider(smallProviderCfg, smallModelCfg, true)
+	backgroundProvider, err := c.buildProvider(backgroundProviderCfg, backgroundModelCfg, true)
 	if err != nil {
-		return Model{}, Model{}, err
+		return Model{}, Model{}, Model{}, err
 	}
 
-	var largeCatwalkModel *catwalk.Model
-	var smallCatwalkModel *catwalk.Model
+	var mainCatwalkModel *catwalk.Model
+	var backgroundCatwalkModel *catwalk.Model
 
-	for _, m := range largeProviderCfg.Models {
-		if m.ID == largeModelCfg.Model {
-			largeCatwalkModel = &m
+	for _, m := range mainProviderCfg.Models {
+		if m.ID == mainModelCfg.Model {
+			mainCatwalkModel = &m
 		}
 	}
-	for _, m := range smallProviderCfg.Models {
-		if m.ID == smallModelCfg.Model {
-			smallCatwalkModel = &m
+	for _, m := range backgroundProviderCfg.Models {
+		if m.ID == backgroundModelCfg.Model {
+			backgroundCatwalkModel = &m
 		}
 	}
 
-	if largeCatwalkModel == nil {
-		return Model{}, Model{}, errLargeModelNotFound
+	if mainCatwalkModel == nil {
+		return Model{}, Model{}, Model{}, errMainModelNotFound
 	}
 
-	if smallCatwalkModel == nil {
-		return Model{}, Model{}, errSmallModelNotFound
+	if backgroundCatwalkModel == nil {
+		return Model{}, Model{}, Model{}, errBackgroundModelNotFound
 	}
 
-	largeModelID := largeModelCfg.Model
-	smallModelID := smallModelCfg.Model
+	mainModelID := mainModelCfg.Model
+	backgroundModelID := backgroundModelCfg.Model
 
-	if largeModelCfg.Provider == openrouter.Name && isExactoSupported(largeModelID) {
-		largeModelID += ":exacto"
+	if mainModelCfg.Provider == openrouter.Name && isExactoSupported(mainModelID) {
+		mainModelID += ":exacto"
 	}
 
-	if smallModelCfg.Provider == openrouter.Name && isExactoSupported(smallModelID) {
-		smallModelID += ":exacto"
+	if backgroundModelCfg.Provider == openrouter.Name && isExactoSupported(backgroundModelID) {
+		backgroundModelID += ":exacto"
 	}
 
-	largeModel, err := largeProvider.LanguageModel(ctx, largeModelID)
+	mainLM, err := mainProvider.LanguageModel(ctx, mainModelID)
 	if err != nil {
-		return Model{}, Model{}, err
+		return Model{}, Model{}, Model{}, err
 	}
-	smallModel, err := smallProvider.LanguageModel(ctx, smallModelID)
+	backgroundLM, err := backgroundProvider.LanguageModel(ctx, backgroundModelID)
 	if err != nil {
-		return Model{}, Model{}, err
+		return Model{}, Model{}, Model{}, err
 	}
 
-	return Model{
-			Model:      largeModel,
-			CatwalkCfg: *largeCatwalkModel,
-			ModelCfg:   largeModelCfg,
-		}, Model{
-			Model:      smallModel,
-			CatwalkCfg: *smallCatwalkModel,
-			ModelCfg:   smallModelCfg,
-		}, nil
+	mainModel := Model{
+		Model:      mainLM,
+		CatwalkCfg: *mainCatwalkModel,
+		ModelCfg:   mainModelCfg,
+	}
+	backgroundModel := Model{
+		Model:      backgroundLM,
+		CatwalkCfg: *backgroundCatwalkModel,
+		ModelCfg:   backgroundModelCfg,
+	}
+
+	// Planning model: use explicitly configured planning model if available,
+	// otherwise fall back to main model.
+	planningModelCfg, hasPlanningCfg := c.cfg.Config().Models[config.SelectedModelTypePlanning]
+	if hasPlanningCfg && planningModelCfg.Model != mainModelCfg.Model {
+		planningProviderCfg, ok := c.cfg.Config().Providers.Get(planningModelCfg.Provider)
+		if ok {
+			planningProvider, planErr := c.buildProvider(planningProviderCfg, planningModelCfg, isSubAgent)
+			if planErr == nil {
+				planningModelID := planningModelCfg.Model
+				if planningModelCfg.Provider == openrouter.Name && isExactoSupported(planningModelID) {
+					planningModelID += ":exacto"
+				}
+				planningLM, planErr := planningProvider.LanguageModel(ctx, planningModelID)
+				if planErr == nil {
+					var planningCatwalkModel *catwalk.Model
+					for _, m := range planningProviderCfg.Models {
+						if m.ID == planningModelCfg.Model {
+							planningCatwalkModel = &m
+							break
+						}
+					}
+					if planningCatwalkModel != nil {
+						return mainModel, backgroundModel, Model{
+							Model:      planningLM,
+							CatwalkCfg: *planningCatwalkModel,
+							ModelCfg:   planningModelCfg,
+						}, nil
+					}
+				}
+			}
+		}
+	}
+
+	// Fall back planning to main.
+	return mainModel, backgroundModel, mainModel, nil
+}
+
+// addAnthropicBeta appends a beta tag to the anthropic-beta header, preserving existing values.
+func addAnthropicBeta(headers map[string]string, tag string) {
+	if v, ok := headers["anthropic-beta"]; ok {
+		headers["anthropic-beta"] = v + "," + tag
+	} else {
+		headers["anthropic-beta"] = tag
+	}
+}
+
+// oauthTransport wraps an http.RoundTripper to make OAuth requests compatible
+// with the Anthropic API's Claude Code validation. It:
+// 1. Injects ?beta=true query param (required for the beta messages endpoint)
+// 2. Prepends the Claude Code system prompt identity
+// 3. Renames tool names to match Claude Code's expected names
+type oauthTransport struct {
+	base http.RoundTripper
+}
+
+// Claude Code tool name mapping (crush name → Claude Code name).
+var claudeCodeToolNames = map[string]string{
+	"bash":           "Bash",
+	"edit":           "Edit",
+	"multiedit":      "Edit",
+	"write":          "Write",
+	"view":           "Read",
+	"glob":           "Glob",
+	"grep":           "Grep",
+	"fetch":          "WebFetch",
+	"agentic_fetch":  "WebFetch",
+	"agent":          "Task",
+	"web_search":     "WebSearch",
+	"ask":            "AskUserQuestion",
+	"download":       "WebFetch",
+	"notebook_edit":  "NotebookEdit",
+	"job_kill":       "KillShell",
+	"job_output":     "TaskOutput",
+	"todo":           "TodoWrite",
+	"skill":          "Skill",
+}
+
+const claudeCodeSystemPrefix = "You are Claude Code, Anthropic's official CLI for Claude."
+
+func (t *oauthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Add ?beta=true
+	q := req.URL.Query()
+	if !q.Has("beta") {
+		q.Set("beta", "true")
+		req.URL.RawQuery = q.Encode()
+	}
+
+	// Only transform POST requests to /v1/messages
+	if req.Method != http.MethodPost || !strings.HasSuffix(req.URL.Path, "/v1/messages") {
+		return t.base.RoundTrip(req)
+	}
+
+	if req.Body == nil {
+		return t.base.RoundTrip(req)
+	}
+
+	bodyBytes, err := io.ReadAll(req.Body)
+	req.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+		// Not JSON, pass through
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		req.ContentLength = int64(len(bodyBytes))
+		return t.base.RoundTrip(req)
+	}
+
+	// Prepend Claude Code identity to system prompt
+	if system, ok := body["system"].([]any); ok {
+		hasIdentity := false
+		for _, s := range system {
+			if m, ok := s.(map[string]any); ok {
+				if text, ok := m["text"].(string); ok && strings.HasPrefix(text, claudeCodeSystemPrefix) {
+					hasIdentity = true
+					break
+				}
+			}
+		}
+		if !hasIdentity {
+			identity := map[string]any{"type": "text", "text": claudeCodeSystemPrefix}
+			body["system"] = append([]any{identity}, system...)
+		}
+	} else {
+		body["system"] = []any{map[string]any{"type": "text", "text": claudeCodeSystemPrefix}}
+	}
+
+	// Rename tool names, skipping duplicates.
+	if tools, ok := body["tools"].([]any); ok {
+		seen := map[string]bool{}
+		// First pass: collect names that are already present (e.g. "Read", "Write").
+		for _, tool := range tools {
+			if m, ok := tool.(map[string]any); ok {
+				if name, ok := m["name"].(string); ok {
+					seen[name] = true
+				}
+			}
+		}
+		// Second pass: rename, skipping if target name already exists.
+		for _, tool := range tools {
+			if m, ok := tool.(map[string]any); ok {
+				if name, ok := m["name"].(string); ok {
+					if ccName, found := claudeCodeToolNames[name]; found && !seen[ccName] {
+						m["name"] = ccName
+						seen[ccName] = true
+					}
+				}
+			}
+		}
+	}
+
+	modified, err := json.Marshal(body)
+	if err != nil {
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		req.ContentLength = int64(len(bodyBytes))
+		return t.base.RoundTrip(req)
+	}
+
+	req.Body = io.NopCloser(bytes.NewReader(modified))
+	req.ContentLength = int64(len(modified))
+	return t.base.RoundTrip(req)
 }
 
 func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map[string]string, providerID string) (fantasy.Provider, error) {
 	var opts []anthropic.Option
+	var useOAuth bool
 
 	switch {
 	case strings.HasPrefix(apiKey, "Bearer "):
 		// NOTE: Prevent the SDK from picking up the API key from env.
 		os.Setenv("ANTHROPIC_API_KEY", "")
 		headers["Authorization"] = apiKey
+	case strings.HasPrefix(apiKey, claudecode.OAuthTokenPrefix):
+		// Claude Code subscription OAuth token — must use Authorization: Bearer, not X-Api-Key,
+		// and requires the oauth and claude-code beta headers plus identity headers.
+		os.Setenv("ANTHROPIC_API_KEY", "")
+		headers["Authorization"] = "Bearer " + apiKey
+		addAnthropicBeta(headers, "claude-code-20250219")
+		addAnthropicBeta(headers, "oauth-2025-04-20")
+		headers["User-Agent"] = "claude-cli/2.1.86"
+		headers["x-app"] = "cli"
+		useOAuth = true
 	case providerID == string(catwalk.InferenceProviderMiniMax) || providerID == string(catwalk.InferenceProviderMiniMaxChina):
 		// NOTE: Prevent the SDK from picking up the API key from env.
 		os.Setenv("ANTHROPIC_API_KEY", "")
@@ -620,10 +821,20 @@ func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map
 		opts = append(opts, anthropic.WithBaseURL(baseURL))
 	}
 
-	if c.cfg.Config().Options.Debug {
-		httpClient := log.NewHTTPClient()
-		opts = append(opts, anthropic.WithHTTPClient(httpClient))
+	// OAuth tokens require the beta messages endpoint (?beta=true query param).
+	// The fantasy layer uses Messages.New (non-beta path), so we inject the query
+	// param via a custom transport to match what the JS SDK does.
+	if useOAuth || c.cfg.Config().Options.Debug {
+		base := http.DefaultTransport
+		if c.cfg.Config().Options.Debug {
+			base = &log.HTTPRoundTripLogger{Transport: base}
+		}
+		if useOAuth {
+			base = &oauthTransport{base: base}
+		}
+		opts = append(opts, anthropic.WithHTTPClient(&http.Client{Transport: base}))
 	}
+
 	return anthropic.New(opts...)
 }
 
@@ -789,6 +1000,13 @@ func (c *coordinator) buildHyperProvider(apiKey string) (fantasy.Provider, error
 	return hyper.New(opts...)
 }
 
+// supportsAdaptiveThinking returns true for models that have interleaved thinking
+// built-in and don't need the interleaved-thinking beta header.
+func supportsAdaptiveThinking(modelID string) bool {
+	return strings.Contains(modelID, "claude-opus-4") ||
+		strings.Contains(modelID, "claude-sonnet-4")
+}
+
 func (c *coordinator) isAnthropicThinking(model config.SelectedModel) bool {
 	if model.Think {
 		return true
@@ -804,12 +1022,10 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 	}
 
 	// handle special headers for anthropic
-	if providerCfg.Type == anthropic.Name && c.isAnthropicThinking(model) {
-		if v, ok := headers["anthropic-beta"]; ok {
-			headers["anthropic-beta"] = v + ",interleaved-thinking-2025-05-14"
-		} else {
-			headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
-		}
+	// Adaptive thinking models (opus 4.6, sonnet 4.6) have interleaved thinking built-in;
+	// the beta header is deprecated on these and can cause errors with OAuth tokens.
+	if providerCfg.Type == anthropic.Name && c.isAnthropicThinking(model) && !supportsAdaptiveThinking(model.Model) {
+		addAnthropicBeta(headers, "interleaved-thinking-2025-05-14")
 	}
 
 	apiKey, _ := c.cfg.Resolve(providerCfg.APIKey)
@@ -858,6 +1074,33 @@ func isExactoSupported(modelID string) bool {
 	return slices.Contains(supportedModels, modelID)
 }
 
+func (c *coordinator) selectModelTier(prompt string, forcedTier config.SelectedModelType) config.SelectedModelType {
+	if forcedTier != "" {
+		return forcedTier
+	}
+	opts := c.cfg.Config().Options
+	if opts == nil || opts.AutoModelTier == nil || !*opts.AutoModelTier {
+		return config.SelectedModelTypeMain
+	}
+	tier := classifyPromptTier(prompt)
+	mainCfg := c.cfg.Config().Models[config.SelectedModelTypeMain]
+	switch tier {
+	case config.SelectedModelTypeBackground:
+		if bg, ok := c.cfg.Config().Models[config.SelectedModelTypeBackground]; ok {
+			if bg.Model != mainCfg.Model || bg.Provider != mainCfg.Provider {
+				return tier
+			}
+		}
+	case config.SelectedModelTypePlanning:
+		if pl, ok := c.cfg.Config().Models[config.SelectedModelTypePlanning]; ok {
+			if pl.Model != mainCfg.Model || pl.Provider != mainCfg.Provider {
+				return tier
+			}
+		}
+	}
+	return config.SelectedModelTypeMain
+}
+
 func (c *coordinator) Cancel(sessionID string) {
 	c.currentAgent.Cancel(sessionID)
 }
@@ -884,11 +1127,14 @@ func (c *coordinator) Model() Model {
 
 func (c *coordinator) UpdateModels(ctx context.Context) error {
 	// build the models again so we make sure we get the latest config
-	large, small, err := c.buildAgentModels(ctx, false)
+	main, background, planning, err := c.buildAgentModels(ctx, false)
 	if err != nil {
 		return err
 	}
-	c.currentAgent.SetModels(large, small)
+	c.currentAgent.SetModels(main, background, planning)
+	c.mainModel = main
+	c.backgroundModel = background
+	c.planningModel = planning
 
 	agentCfg, ok := c.cfg.Config().Agents[config.AgentCoder]
 	if !ok {

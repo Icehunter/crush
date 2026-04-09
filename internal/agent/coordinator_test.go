@@ -24,7 +24,7 @@ func (m *mockSessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fan
 }
 
 func (m *mockSessionAgent) Model() Model                        { return m.model }
-func (m *mockSessionAgent) SetModels(large, small Model)        {}
+func (m *mockSessionAgent) SetModels(main, background, planning Model) {}
 func (m *mockSessionAgent) SetTools(tools []fantasy.AgentTool)  {}
 func (m *mockSessionAgent) SetSystemPrompt(systemPrompt string) {}
 func (m *mockSessionAgent) Cancel(sessionID string) {

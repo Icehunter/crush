@@ -146,19 +146,19 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				return fantasy.ToolResponse{}, fmt.Errorf("error creating prompt: %s", err)
 			}
 
-			_, small, err := c.buildAgentModels(ctx, true)
+			_, background, _, err := c.buildAgentModels(ctx, true)
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("error building models: %s", err)
 			}
 
-			systemPrompt, err := promptTemplate.Build(ctx, small.Model.Provider(), small.Model.Model(), c.cfg)
+			systemPrompt, err := promptTemplate.Build(ctx, background.Model.Provider(), background.Model.Model(), c.cfg)
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("error building system prompt: %s", err)
 			}
 
-			smallProviderCfg, ok := c.cfg.Config().Providers.Get(small.ModelCfg.Provider)
+			backgroundProviderCfg, ok := c.cfg.Config().Providers.Get(background.ModelCfg.Provider)
 			if !ok {
-				return fantasy.ToolResponse{}, errors.New("small model provider not configured")
+				return fantasy.ToolResponse{}, errors.New("background model provider not configured")
 			}
 
 			webFetchTool := tools.NewWebFetchTool(tmpDir, client)
@@ -173,9 +173,9 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 			}
 
 			agent := NewSessionAgent(SessionAgentOptions{
-				LargeModel:           small, // Use small model for both (fetch doesn't need large)
-				SmallModel:           small,
-				SystemPromptPrefix:   smallProviderCfg.SystemPromptPrefix,
+				MainModel:            background, // Use background model for fetch (cheap, fast)
+				BackgroundModel:      background,
+				SystemPromptPrefix:   backgroundProviderCfg.SystemPromptPrefix,
 				SystemPrompt:         systemPrompt,
 				DisableAutoSummarize: c.cfg.Config().Options.DisableAutoSummarize,
 				IsYolo:               c.permissions.SkipRequests(),

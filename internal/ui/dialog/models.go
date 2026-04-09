@@ -20,17 +20,24 @@ import (
 type ModelType int
 
 const (
-	ModelTypeLarge ModelType = iota
-	ModelTypeSmall
+	ModelTypeMain ModelType = iota
+	ModelTypeBackground
+	ModelTypePlanning
+
+	// Deprecated aliases kept for backward compatibility.
+	ModelTypeLarge = ModelTypeMain
+	ModelTypeSmall = ModelTypeBackground
 )
 
 // String returns the string representation of the [ModelType].
 func (mt ModelType) String() string {
 	switch mt {
-	case ModelTypeLarge:
-		return "Large Task"
-	case ModelTypeSmall:
-		return "Small Task"
+	case ModelTypeMain:
+		return "Main Task"
+	case ModelTypeBackground:
+		return "Background Task"
+	case ModelTypePlanning:
+		return "Planning Task"
 	default:
 		return "Unknown"
 	}
@@ -39,10 +46,12 @@ func (mt ModelType) String() string {
 // Config returns the corresponding config model type.
 func (mt ModelType) Config() config.SelectedModelType {
 	switch mt {
-	case ModelTypeLarge:
-		return config.SelectedModelTypeLarge
-	case ModelTypeSmall:
-		return config.SelectedModelTypeSmall
+	case ModelTypeMain:
+		return config.SelectedModelTypeMain
+	case ModelTypeBackground:
+		return config.SelectedModelTypeBackground
+	case ModelTypePlanning:
+		return config.SelectedModelTypePlanning
 	default:
 		return ""
 	}
@@ -51,19 +60,22 @@ func (mt ModelType) Config() config.SelectedModelType {
 // Placeholder returns the input placeholder for the model type.
 func (mt ModelType) Placeholder() string {
 	switch mt {
-	case ModelTypeLarge:
-		return largeModelInputPlaceholder
-	case ModelTypeSmall:
-		return smallModelInputPlaceholder
+	case ModelTypeMain:
+		return mainModelInputPlaceholder
+	case ModelTypeBackground:
+		return backgroundModelInputPlaceholder
+	case ModelTypePlanning:
+		return planningModelInputPlaceholder
 	default:
 		return ""
 	}
 }
 
 const (
-	onboardingModelInputPlaceholder = "Find your fave"
-	largeModelInputPlaceholder      = "Choose a model for large, complex tasks"
-	smallModelInputPlaceholder      = "Choose a model for small, simple tasks"
+	onboardingModelInputPlaceholder  = "Find your fave"
+	mainModelInputPlaceholder        = "Choose a model for main, complex tasks"
+	backgroundModelInputPlaceholder  = "Choose a model for background, simple tasks"
+	planningModelInputPlaceholder    = "Choose a model for planning and architecture tasks"
 )
 
 // ModelsID is the identifier for the model selection dialog.
@@ -199,17 +211,20 @@ func (m *Models) HandleMsg(msg tea.Msg) Action {
 			return ActionSelectModel{
 				Provider:       modelItem.prov,
 				Model:          modelItem.SelectedModel(),
-				ModelType:      modelItem.SelectedModelType(),
+				ModelType:      m.modelType.Config(),
 				ReAuthenticate: isEdit,
 			}
 		case key.Matches(msg, m.keyMap.Tab):
 			if m.isOnboarding {
 				break
 			}
-			if m.modelType == ModelTypeLarge {
-				m.modelType = ModelTypeSmall
-			} else {
-				m.modelType = ModelTypeLarge
+			switch m.modelType {
+			case ModelTypeMain:
+				m.modelType = ModelTypeBackground
+			case ModelTypeBackground:
+				m.modelType = ModelTypePlanning
+			default:
+				m.modelType = ModelTypeMain
 			}
 			if err := m.setProviderItems(); err != nil {
 				return util.ReportError(err)
@@ -237,20 +252,26 @@ func (m *Models) Cursor() *tea.Cursor {
 func (m *Models) modelTypeRadioView() string {
 	t := m.com.Styles
 	textStyle := t.HalfMuted
-	largeRadioStyle := t.RadioOff
-	smallRadioStyle := t.RadioOff
-	if m.modelType == ModelTypeLarge {
-		largeRadioStyle = t.RadioOn
-	} else {
-		smallRadioStyle = t.RadioOn
+	mainRadioStyle := t.RadioOff
+	backgroundRadioStyle := t.RadioOff
+	planningRadioStyle := t.RadioOff
+	switch m.modelType {
+	case ModelTypeMain:
+		mainRadioStyle = t.RadioOn
+	case ModelTypeBackground:
+		backgroundRadioStyle = t.RadioOn
+	case ModelTypePlanning:
+		planningRadioStyle = t.RadioOn
 	}
 
-	largeRadio := largeRadioStyle.Padding(0, 1).Render()
-	smallRadio := smallRadioStyle.Padding(0, 1).Render()
+	mainRadio := mainRadioStyle.Padding(0, 1).Render()
+	backgroundRadio := backgroundRadioStyle.Padding(0, 1).Render()
+	planningRadio := planningRadioStyle.Padding(0, 1).Render()
 
-	return fmt.Sprintf("%s%s  %s%s",
-		largeRadio, textStyle.Render(ModelTypeLarge.String()),
-		smallRadio, textStyle.Render(ModelTypeSmall.String()))
+	return fmt.Sprintf("%s%s  %s%s  %s%s",
+		mainRadio, textStyle.Render(ModelTypeMain.String()),
+		backgroundRadio, textStyle.Render(ModelTypeBackground.String()),
+		planningRadio, textStyle.Render(ModelTypePlanning.String()))
 }
 
 // Draw implements [Dialog].

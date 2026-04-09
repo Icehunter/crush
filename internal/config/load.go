@@ -236,10 +236,8 @@ func (c *Config) configureProviders(store *ConfigStore, env env.Env, resolver Va
 
 		switch {
 		case p.ID == catwalk.InferenceProviderAnthropic && config.OAuthToken != nil:
-			// Claude Code subscription is not supported anymore. Remove to show onboarding.
-			store.RemoveConfigField(ScopeGlobal, "providers.anthropic")
-			c.Providers.Del(string(p.ID))
-			continue
+			// Use Claude Code subscription token as API key.
+			prepared.APIKey = config.OAuthToken.AccessToken
 		case p.ID == catwalk.InferenceProviderCopilot && config.OAuthToken != nil:
 			prepared.SetupGitHubCopilot()
 		}
@@ -485,10 +483,10 @@ func (c *Config) applyLSPDefaults() {
 	}
 }
 
-func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (largeModel SelectedModel, smallModel SelectedModel, err error) {
+func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (mainModel SelectedModel, backgroundModel SelectedModel, err error) {
 	if len(knownProviders) == 0 && c.Providers.Len() == 0 {
 		err = fmt.Errorf("no providers configured, please configure at least one provider")
-		return largeModel, smallModel, err
+		return mainModel, backgroundModel, err
 	}
 
 	// Use the first provider enabled based on the known providers order
@@ -498,30 +496,30 @@ func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (large
 		if !ok || providerConfig.Disable {
 			continue
 		}
-		defaultLargeModel := c.GetModel(string(p.ID), p.DefaultLargeModelID)
-		if defaultLargeModel == nil {
+		defaultMainModel := c.GetModel(string(p.ID), p.DefaultLargeModelID)
+		if defaultMainModel == nil {
 			err = fmt.Errorf("default large model %s not found for provider %s", p.DefaultLargeModelID, p.ID)
-			return largeModel, smallModel, err
+			return mainModel, backgroundModel, err
 		}
-		largeModel = SelectedModel{
+		mainModel = SelectedModel{
 			Provider:        string(p.ID),
-			Model:           defaultLargeModel.ID,
-			MaxTokens:       defaultLargeModel.DefaultMaxTokens,
-			ReasoningEffort: defaultLargeModel.DefaultReasoningEffort,
+			Model:           defaultMainModel.ID,
+			MaxTokens:       defaultMainModel.DefaultMaxTokens,
+			ReasoningEffort: defaultMainModel.DefaultReasoningEffort,
 		}
 
-		defaultSmallModel := c.GetModel(string(p.ID), p.DefaultSmallModelID)
-		if defaultSmallModel == nil {
+		defaultBackgroundModel := c.GetModel(string(p.ID), p.DefaultSmallModelID)
+		if defaultBackgroundModel == nil {
 			err = fmt.Errorf("default small model %s not found for provider %s", p.DefaultSmallModelID, p.ID)
-			return largeModel, smallModel, err
+			return mainModel, backgroundModel, err
 		}
-		smallModel = SelectedModel{
+		backgroundModel = SelectedModel{
 			Provider:        string(p.ID),
-			Model:           defaultSmallModel.ID,
-			MaxTokens:       defaultSmallModel.DefaultMaxTokens,
-			ReasoningEffort: defaultSmallModel.DefaultReasoningEffort,
+			Model:           defaultBackgroundModel.ID,
+			MaxTokens:       defaultBackgroundModel.DefaultMaxTokens,
+			ReasoningEffort: defaultBackgroundModel.DefaultReasoningEffort,
 		}
-		return largeModel, smallModel, err
+		return mainModel, backgroundModel, err
 	}
 
 	enabledProviders := c.EnabledProviders()
@@ -531,126 +529,130 @@ func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (large
 
 	if len(enabledProviders) == 0 {
 		err = fmt.Errorf("no providers configured, please configure at least one provider")
-		return largeModel, smallModel, err
+		return mainModel, backgroundModel, err
 	}
 
 	providerConfig := enabledProviders[0]
 	if len(providerConfig.Models) == 0 {
 		err = fmt.Errorf("provider %s has no models configured", providerConfig.ID)
-		return largeModel, smallModel, err
+		return mainModel, backgroundModel, err
 	}
-	defaultLargeModel := c.GetModel(providerConfig.ID, providerConfig.Models[0].ID)
-	largeModel = SelectedModel{
+	defaultMainModel := c.GetModel(providerConfig.ID, providerConfig.Models[0].ID)
+	mainModel = SelectedModel{
 		Provider:  providerConfig.ID,
-		Model:     defaultLargeModel.ID,
-		MaxTokens: defaultLargeModel.DefaultMaxTokens,
+		Model:     defaultMainModel.ID,
+		MaxTokens: defaultMainModel.DefaultMaxTokens,
 	}
-	defaultSmallModel := c.GetModel(providerConfig.ID, providerConfig.Models[0].ID)
-	smallModel = SelectedModel{
+	defaultBackgroundModel := c.GetModel(providerConfig.ID, providerConfig.Models[0].ID)
+	backgroundModel = SelectedModel{
 		Provider:  providerConfig.ID,
-		Model:     defaultSmallModel.ID,
-		MaxTokens: defaultSmallModel.DefaultMaxTokens,
+		Model:     defaultBackgroundModel.ID,
+		MaxTokens: defaultBackgroundModel.DefaultMaxTokens,
 	}
-	return largeModel, smallModel, err
+	return mainModel, backgroundModel, err
+}
+
+// applyModelConfig merges a user-configured SelectedModel on top of a default.
+func applyModelConfig(base SelectedModel, override SelectedModel) SelectedModel {
+	if override.Model != "" {
+		base.Model = override.Model
+	}
+	if override.Provider != "" {
+		base.Provider = override.Provider
+	}
+	if override.MaxTokens > 0 {
+		base.MaxTokens = override.MaxTokens
+	}
+	if override.ReasoningEffort != "" {
+		base.ReasoningEffort = override.ReasoningEffort
+	}
+	base.Think = override.Think
+	if override.Temperature != nil {
+		base.Temperature = override.Temperature
+	}
+	if override.TopP != nil {
+		base.TopP = override.TopP
+	}
+	if override.TopK != nil {
+		base.TopK = override.TopK
+	}
+	if override.FrequencyPenalty != nil {
+		base.FrequencyPenalty = override.FrequencyPenalty
+	}
+	if override.PresencePenalty != nil {
+		base.PresencePenalty = override.PresencePenalty
+	}
+	return base
 }
 
 func configureSelectedModels(store *ConfigStore, knownProviders []catwalk.Provider) error {
 	c := store.config
-	defaultLarge, defaultSmall, err := c.defaultModelSelection(knownProviders)
+	defaultMain, defaultBackground, err := c.defaultModelSelection(knownProviders)
 	if err != nil {
 		return fmt.Errorf("failed to select default models: %w", err)
 	}
-	large, small := defaultLarge, defaultSmall
 
-	largeModelSelected, largeModelConfigured := c.Models[SelectedModelTypeLarge]
-	if largeModelConfigured {
-		if largeModelSelected.Model != "" {
-			large.Model = largeModelSelected.Model
-		}
-		if largeModelSelected.Provider != "" {
-			large.Provider = largeModelSelected.Provider
-		}
-		model := c.GetModel(large.Provider, large.Model)
-		if model == nil {
-			large = defaultLarge
-			// override the model type to large
-			err := store.UpdatePreferredModel(ScopeGlobal, SelectedModelTypeLarge, large)
-			if err != nil {
-				return fmt.Errorf("failed to update preferred large model: %w", err)
-			}
-		} else {
-			if largeModelSelected.MaxTokens > 0 {
-				large.MaxTokens = largeModelSelected.MaxTokens
-			} else {
-				large.MaxTokens = model.DefaultMaxTokens
-			}
-			if largeModelSelected.ReasoningEffort != "" {
-				large.ReasoningEffort = largeModelSelected.ReasoningEffort
-			}
-			large.Think = largeModelSelected.Think
-			if largeModelSelected.Temperature != nil {
-				large.Temperature = largeModelSelected.Temperature
-			}
-			if largeModelSelected.TopP != nil {
-				large.TopP = largeModelSelected.TopP
-			}
-			if largeModelSelected.TopK != nil {
-				large.TopK = largeModelSelected.TopK
-			}
-			if largeModelSelected.FrequencyPenalty != nil {
-				large.FrequencyPenalty = largeModelSelected.FrequencyPenalty
-			}
-			if largeModelSelected.PresencePenalty != nil {
-				large.PresencePenalty = largeModelSelected.PresencePenalty
-			}
+	// Migrate legacy large → main (if main not already set).
+	if _, hasMain := c.Models[SelectedModelTypeMain]; !hasMain {
+		if legacy, hasLarge := c.Models[SelectedModelTypeLarge]; hasLarge {
+			c.Models[SelectedModelTypeMain] = legacy
 		}
 	}
-	smallModelSelected, smallModelConfigured := c.Models[SelectedModelTypeSmall]
-	if smallModelConfigured {
-		if smallModelSelected.Model != "" {
-			small.Model = smallModelSelected.Model
-		}
-		if smallModelSelected.Provider != "" {
-			small.Provider = smallModelSelected.Provider
-		}
-
-		model := c.GetModel(small.Provider, small.Model)
-		if model == nil {
-			small = defaultSmall
-			// override the model type to small
-			err := store.UpdatePreferredModel(ScopeGlobal, SelectedModelTypeSmall, small)
-			if err != nil {
-				return fmt.Errorf("failed to update preferred small model: %w", err)
-			}
-		} else {
-			if smallModelSelected.MaxTokens > 0 {
-				small.MaxTokens = smallModelSelected.MaxTokens
-			} else {
-				small.MaxTokens = model.DefaultMaxTokens
-			}
-			if smallModelSelected.ReasoningEffort != "" {
-				small.ReasoningEffort = smallModelSelected.ReasoningEffort
-			}
-			if smallModelSelected.Temperature != nil {
-				small.Temperature = smallModelSelected.Temperature
-			}
-			if smallModelSelected.TopP != nil {
-				small.TopP = smallModelSelected.TopP
-			}
-			if smallModelSelected.TopK != nil {
-				small.TopK = smallModelSelected.TopK
-			}
-			if smallModelSelected.FrequencyPenalty != nil {
-				small.FrequencyPenalty = smallModelSelected.FrequencyPenalty
-			}
-			if smallModelSelected.PresencePenalty != nil {
-				small.PresencePenalty = smallModelSelected.PresencePenalty
-			}
-			small.Think = smallModelSelected.Think
+	// Migrate legacy small → background (if background not already set).
+	if _, hasBg := c.Models[SelectedModelTypeBackground]; !hasBg {
+		if legacy, hasSmall := c.Models[SelectedModelTypeSmall]; hasSmall {
+			c.Models[SelectedModelTypeBackground] = legacy
 		}
 	}
-	c.Models[SelectedModelTypeLarge] = large
-	c.Models[SelectedModelTypeSmall] = small
+
+	// Configure main model.
+	main := defaultMain
+	if mainModelSelected, configured := c.Models[SelectedModelTypeMain]; configured {
+		main = applyModelConfig(main, mainModelSelected)
+		model := c.GetModel(main.Provider, main.Model)
+		if model == nil {
+			main = defaultMain
+			if err := store.UpdatePreferredModel(ScopeGlobal, SelectedModelTypeMain, main); err != nil {
+				return fmt.Errorf("failed to update preferred main model: %w", err)
+			}
+		} else if mainModelSelected.MaxTokens == 0 {
+			main.MaxTokens = model.DefaultMaxTokens
+		}
+	}
+
+	// Configure background model.
+	background := defaultBackground
+	if bgModelSelected, configured := c.Models[SelectedModelTypeBackground]; configured {
+		background = applyModelConfig(background, bgModelSelected)
+		model := c.GetModel(background.Provider, background.Model)
+		if model == nil {
+			background = defaultBackground
+			if err := store.UpdatePreferredModel(ScopeGlobal, SelectedModelTypeBackground, background); err != nil {
+				return fmt.Errorf("failed to update preferred background model: %w", err)
+			}
+		} else if bgModelSelected.MaxTokens == 0 {
+			background.MaxTokens = model.DefaultMaxTokens
+		}
+	}
+
+	// Configure planning model — defaults to main if not explicitly set.
+	planning := main
+	if planningModelSelected, configured := c.Models[SelectedModelTypePlanning]; configured {
+		planning = applyModelConfig(planning, planningModelSelected)
+		model := c.GetModel(planning.Provider, planning.Model)
+		if model == nil {
+			planning = main
+			if err := store.UpdatePreferredModel(ScopeGlobal, SelectedModelTypePlanning, planning); err != nil {
+				return fmt.Errorf("failed to update preferred planning model: %w", err)
+			}
+		} else if planningModelSelected.MaxTokens == 0 {
+			planning.MaxTokens = model.DefaultMaxTokens
+		}
+	}
+
+	c.Models[SelectedModelTypeMain] = main
+	c.Models[SelectedModelTypeBackground] = background
+	c.Models[SelectedModelTypePlanning] = planning
 	return nil
 }
 

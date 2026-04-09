@@ -14,41 +14,66 @@ import (
 // modelInfo renders the current model information including reasoning
 // settings and context usage/cost for the sidebar.
 func (m *UI) modelInfo(width int) string {
-	model := m.selectedLargeModel()
+	// Use the last assistant message's model if we have one (reflects actual
+	// tier used), otherwise fall back to the configured main model.
+	displayModel := m.selectedLargeModel()
 	reasoningInfo := ""
 	providerName := ""
+	modelName := ""
 
-	if model != nil {
-		// Get provider name first
-		providerConfig, ok := m.com.Config().Providers.Get(model.ModelCfg.Provider)
+	cfg := m.com.Config()
+
+	if m.lastAssistantMsgModel != "" {
+		// Show the model that actually answered the last prompt.
+		providerName = m.lastAssistantMsgProvider
+		if pc, ok := cfg.Providers.Get(m.lastAssistantMsgProvider); ok {
+			providerName = pc.Name
+		}
+		modelName = m.lastAssistantMsgModel
+		if catwalkModel := cfg.GetModel(m.lastAssistantMsgProvider, m.lastAssistantMsgModel); catwalkModel != nil {
+			modelName = cmp.Or(catwalkModel.Name, m.lastAssistantMsgModel)
+		}
+	} else if displayModel != nil {
+		providerConfig, ok := cfg.Providers.Get(displayModel.ModelCfg.Provider)
 		if ok {
 			providerName = providerConfig.Name
 
 			// Only check reasoning if model can reason
-			if model.CatwalkCfg.CanReason {
-				if len(model.CatwalkCfg.ReasoningLevels) == 0 {
-					if model.ModelCfg.Think {
+			if displayModel.CatwalkCfg.CanReason {
+				if len(displayModel.CatwalkCfg.ReasoningLevels) == 0 {
+					if displayModel.ModelCfg.Think {
 						reasoningInfo = "Thinking On"
 					} else {
 						reasoningInfo = "Thinking Off"
 					}
 				} else {
-					reasoningEffort := cmp.Or(model.ModelCfg.ReasoningEffort, model.CatwalkCfg.DefaultReasoningEffort)
+					reasoningEffort := cmp.Or(displayModel.ModelCfg.ReasoningEffort, displayModel.CatwalkCfg.DefaultReasoningEffort)
 					reasoningInfo = fmt.Sprintf("Reasoning %s", common.FormatReasoningEffort(reasoningEffort))
 				}
 			}
 		}
+		modelName = displayModel.CatwalkCfg.Name
 	}
 
 	var modelContext *common.ModelContextInfo
-	if model != nil && m.session != nil {
+	if m.session != nil {
+		var contextWindow int64
+		if displayModel != nil {
+			contextWindow = displayModel.CatwalkCfg.ContextWindow
+		}
+		// Use the last-used model's context window for the percentage if available.
+		if m.lastAssistantMsgModel != "" {
+			if catwalkModel := cfg.GetModel(m.lastAssistantMsgProvider, m.lastAssistantMsgModel); catwalkModel != nil {
+				contextWindow = catwalkModel.ContextWindow
+			}
+		}
 		modelContext = &common.ModelContextInfo{
 			ContextUsed:  m.session.CompletionTokens + m.session.PromptTokens,
 			Cost:         m.session.Cost,
-			ModelContext: model.CatwalkCfg.ContextWindow,
+			ModelContext: contextWindow,
 		}
 	}
-	return common.ModelInfo(m.com.Styles, model.CatwalkCfg.Name, providerName, reasoningInfo, modelContext, width)
+	return common.ModelInfo(m.com.Styles, modelName, providerName, reasoningInfo, modelContext, width)
 }
 
 // getDynamicHeightLimits will give us the num of items to show in each section based on the hight
